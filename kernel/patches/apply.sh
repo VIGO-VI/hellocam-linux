@@ -12,6 +12,16 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 tree=$(cd "$here/../uvc" && pwd)
 
+find_reverse_strip() {
+	for n in 1 2 3 4 5 6; do
+		if patch -d "$tree" -p"$n" -R --dry-run -s < "$1" >/dev/null 2>&1; then
+			echo "$n"
+			return 0
+		fi
+	done
+	return 1
+}
+
 find_strip() {
 	for n in 1 2 3 4 5 6; do
 		if patch -d "$tree" -p"$n" --dry-run -s < "$1" >/dev/null 2>&1; then
@@ -25,7 +35,7 @@ find_strip() {
 applied=0
 for p in "$here"/*.patch; do
 	name=$(basename "$p")
-	if [ -n "${strip:-}" ] && patch -d "$tree" -p"$strip" -R --dry-run -s < "$p" >/dev/null 2>&1; then
+	if find_reverse_strip "$p" >/dev/null; then
 		echo "already applied $name"
 		applied=$((applied + 1))
 		continue
