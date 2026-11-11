@@ -31,4 +31,4 @@ Worth noting: `ir-setup`'s derived value is byte-for-byte the one my tool wrote 
 
 The camera is left in D1, which is what "saved" means; if I want it idle again, `hellocamctl ir off` puts it back to D0.
 
-One thing that may be a small upstream nicety while you are in this area: `GET_MIN`/`GET_RES` on this control return only the count byte (as the Microsoft document specifies), while `uvc_query_ctrl()` asks for the full 9 bytes and logs `UVC non compliance: GET_MIN control 6 on unit 4 returned 1 bytes when we expected 9`. Nothing breaks, but a driver-side mapping of this control cannot read those requests without producing that line.
+One thing that may be a small upstream nicety while you are in this area: `GET_MIN` on this control returns only the count byte (as the Microsoft document specifies for `GET_MIN` and `GET_RES`), while `uvc_query_ctrl()` asks for the full 9 bytes and logs `UVC non compliance: GET_MIN control 6 on unit 4 returned 1 bytes when we expected 9`. Nothing breaks, but a driver-side mapping of this control cannot read those requests without producing that line.

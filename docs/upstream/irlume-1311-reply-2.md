@@ -18,7 +18,7 @@ $ journalctl -k | grep -m1 "Found UVC"
 Nov 10 23:02:18 ... uvcvideo 1-3:1.0: Found UVC 1.00 device N930W 60fps (3443:930d)
 ```
 
-`ir-setup` ran at 23:28-23:31, so 20 minutes after an ordinary boot with the stock driver. The out-of-tree module I built for the unrelated kernel work was last loaded at 16:39 that afternoon, before this boot. Nothing in the record depends on it.
+`ir-setup` ran at 23:28-23:31, so about 26 minutes after an ordinary boot with the stock driver. The out-of-tree module I built for the unrelated kernel work was last loaded at 16:39 that afternoon, before this boot. Nothing in the record depends on it.
 
 **A correction to my earlier "second finding", so it does not travel.** I claimed `uvc_ctrls[]`'s Region of Interest entry was internally inconsistent (matching `bmControls` bit 21 while carrying selector `0x14`). That was wrong, and the hardware shows it: the Camera Terminal's `bmControls` ordering is not `selector - 1` for the UVC 1.5 additions — the driver's own table has Focus Auto at bit 17 for selector 8, Privacy at bit 18 for `0x11`, ROI at bit 21 for `0x14`, exactly as merged in `[PATCH v17 16/17]`. This camera advertising bit 21 is compliant; the firmware is what answers ROI requests with `-EIO`, and only on its RGB terminal — the IR terminal's ROI control answers `SET_CUR 1` / `GET_CUR 1` correctly, which is why any quirk for it has to be scoped to one interface rather than the device. So: device quirk, no driver bug. I have withdrawn that paragraph from the published comment.
 
