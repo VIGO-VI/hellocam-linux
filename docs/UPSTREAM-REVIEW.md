@@ -131,13 +131,24 @@ device, same unit, same selector, same length — only the interface differs:
 
 ```console
 RGB terminal, interface 0:
+  submit  : a1 86 1400 0100 0001   (GET_INFO, selector 0x14, unit 1, iface 0, 1 byte)
+  complete: -32 0                  (-EPIPE = STALL, no data)
+
   submit  : a1 87 1400 0100 000a   (GET_DEF, selector 0x14, unit 1, iface 0, 10 bytes)
   complete: -32 0                  (-EPIPE = STALL, no data)   ×4 retries
 
 IR terminal, interface 2:
+  submit  : a1 86 1400 0102 0001   (GET_INFO, selector 0x14, unit 1, iface 2, 1 byte)
+  complete: 0 1 = 03               (GET|SET advertised)
+
   submit  : a1 81 1400 0102 000a   (GET_CUR, selector 0x14, unit 1, iface 2, 10 bytes)
   complete: 0 10 = 00000000 00000000 0100
 ```
+
+The RGB terminal stalls even `GET_INFO`. So the firmware does not merely mishandle
+the control: it does not acknowledge that the control exists, while its own
+descriptor advertises it in `bmControls`. The IR terminal answers `GET_INFO` with
+`0x03` and then serves the data request.
 
 The IR response is a valid `struct uvc_rect` (all zeros) plus `bmAutoControls =
 0x0001`. So the request the driver sends is well formed, the device accepts it
@@ -261,7 +272,9 @@ Everything below is reproducible from the public repository
 | descriptor, bit 21 on both terminals | `lsusb -v`, plus a 1071-byte descriptor walk |
 | RGB fails, IR works | `v4l2-ctl` before/after the patch, on both nodes |
 | device answers error 7 | tracing build without the quirk, `Control error 7` in dmesg |
-| the request is well formed | `usbmon`: `a1 87 1400 0100 000a` stalled with `-32`; `a1 81 1400 0102 000a` on interface 2 returns 10 valid bytes |
+| the request is well formed | `usbmon`: `a1 86 1400 0100 0001` (GET_INFO) and `a1 87 1400 0100 000a` both stalled with `-32`; the same two requests on interface 2 return `03` and 10 valid bytes |
+| not a stale-state artefact | after a physical unplug/replug (new USB device number, distro driver), `--list-ctrls` on `/dev/video0` still reports the same error |
+| not specific to the port or hub | the same failure is logged on the monitor hub (`1-2.1`) and on a direct rear port (`1-3`); the hub also carries the IR terminal's identical requests successfully |
 | the patch fixes a compliance failure | `v4l2-compliance`: RGB 46/49 → 49/49; IR unchanged 48/49 |
 | patch behaviour | with the quirk: RGB keeps 19 controls, loses only the error line; IR keeps both ROI controls and its value; no `non compliance` line |
 | patch applies and builds | `pristine v7.3 + 0001 + 0002` reconstructs the tested tree byte-for-byte; `audit.sh --build` clones HEAD, fetches, patches, builds |
