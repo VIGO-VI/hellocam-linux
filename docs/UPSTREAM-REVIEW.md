@@ -164,8 +164,22 @@ fail: v4l2-test-controls.cpp(939): try_ext_ctrls returned an error (5)
 That is the strongest form of the justification: the patch is not cosmetic, it
 turns a node that fails the standard compliance tool into one that passes.
 
-The IR node's single failure (`expected 1 private controls, got 0`) is present
-identically with and without the patch, so it is pre-existing and unrelated.
+The IR node's single failure is **a v4l2-compliance bug, already fixed
+upstream**, not a kernel defect:
+
+```
+v4l-utils af4a91dea9a2  "v4l2-compliance: skip V4L2_CID_PRIVATE_BASE check for UVC"
+                        Hans Verkuil, 2025-10-29
+```
+
+That test probes `V4L2_CID_PRIVATE_BASE` upward and expects zero controls,
+because uvcvideo does not implement that range; the fix makes the tool skip the
+check when the driver is `uvcvideo`. The `v4l2-compliance 1.32.0` installed here
+predates it (the marker string is absent from the binary and its `--is-uvc` flag
+does not exist yet), so it fails on the IR node for having any UVC-specific
+control at all. Reproduced identically with the distro driver, with the patch,
+and with the RFC control absent, which rules out both the patch and our control
+as causes.
 
 ### 2.6 The device's own answer
 
@@ -268,10 +282,11 @@ Say these before a reviewer finds them:
    (sentinel `-1`) rather than measurement.
 5. **The IR terminal's rectangle control** was not exercised either; only the
    auto bitmask.
-6. **A pre-existing `v4l2-compliance` failure on the IR node** (`expected 1
-   private controls, got 0`) is untouched by this patch. It may itself be a
-   uvcvideo bug worth reporting separately; it is not a reason to change this
-   submission.
+6. **The IR node's remaining `v4l2-compliance` failure is a v4l-utils bug**
+   (`af4a91dea9a2`, fixed 2025-10-29, newer than the 1.32.0 installed here).
+   Verified by reproducing it with the distro driver, with the patch, and with
+   the RFC control removed, so it belongs to neither. Citing it is enough; the
+   fixed tool was not built because that needs `meson`, which is not installed.
 
 ## 7. Anticipated objections
 

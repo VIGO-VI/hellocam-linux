@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Your Name <you@example.com>
-Date: Wed, 11 Nov 2026 01:06:13 -0600
+Date: Wed, 11 Nov 2026 01:10:22 -0600
 Subject: [PATCH] media: uvcvideo: expose the MS-XU face authentication control
 
 Microsoft's UVC 1.5 extensions define a Face Authentication control
@@ -27,14 +27,14 @@ three-entry menu, writing D1 gives per-frame IR means alternating 0.9 and
 
 Signed-off-by: <PENDING: your name <you@example.com>>
 ---
- drivers/media/usb/uvc/uvc_ctrl.c | 122 +++++++++++++++++++++++++++++++
- 1 file changed, 122 insertions(+)
+ drivers/media/usb/uvc/uvc_ctrl.c | 107 +++++++++++++++++++++++++++++++
+ 1 file changed, 107 insertions(+)
 
 diff --git a/drivers/media/usb/uvc/uvc_ctrl.c b/drivers/media/usb/uvc/uvc_ctrl.c
-index c10c8d0..8bd21c0 100644
+index c10c8d0..8dd56b5 100644
 --- a/drivers/media/usb/uvc/uvc_ctrl.c
 +++ b/drivers/media/usb/uvc/uvc_ctrl.c
-@@ -36,7 +36,114 @@
+@@ -36,7 +36,99 @@
   * Controls
   */
  
@@ -122,21 +122,6 @@ index c10c8d0..8bd21c0 100644
 +	return 0;
 +}
 +
-+static const struct uvc_control_mapping uvc_ctrl_face_auth_mapping = {
-+	.id		= V4L2_CID_UVC_FACE_AUTHENTICATION,
-+	.entity		= UVC_GUID_MSXU_1_5,
-+	.selector	= UVC_MSXU_CONTROL_FACE_AUTHENTICATION,
-+	.size		= 8,
-+	.offset		= UVC_FACE_AUTH_FLAGS_OFFSET * 8,
-+	.v4l2_type	= V4L2_CTRL_TYPE_MENU,
-+	.data_type	= UVC_CTRL_DATA_TYPE_ENUM,
-+	.menu_mapping	= uvc_ctrl_face_auth_values,
-+	.menu_names	= uvc_ctrl_face_auth_names,
-+	.menu_mask	= GENMASK(UVC_FACE_AUTH_MAX_MODE, 0),
-+	.get		= uvc_get_face_auth,
-+	.set		= uvc_set_face_auth,
-+	.name		= "Face Authentication Mode",
-+};
 +
  static const struct uvc_control_info uvc_ctrls[] = {
 +	{
@@ -149,7 +134,7 @@ index c10c8d0..8bd21c0 100644
  	{
  		.entity		= UVC_GUID_UVC_PROCESSING,
  		.selector	= UVC_PU_BRIGHTNESS_CONTROL,
-@@ -1090,6 +1197,21 @@ static const struct uvc_control_mapping uvc_ctrl_mappings[] = {
+@@ -1090,6 +1182,21 @@ static const struct uvc_control_mapping uvc_ctrl_mappings[] = {
  		.data_type	= UVC_CTRL_DATA_TYPE_BITMASK,
  		.name		= "Region of Interest Auto Ctrls",
  	},

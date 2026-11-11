@@ -1,6 +1,6 @@
 --- a/drivers/media/usb/uvc/uvc_ctrl.c
 +++ b/drivers/media/usb/uvc/uvc_ctrl.c
-@@ -3537,15 +3537,27 @@
+@@ -3522,15 +3522,27 @@
  	struct uvc_ctrl_blacklist {
  		struct usb_device_id id;
  		u8 index;
@@ -32,7 +32,7 @@
  	};
  
  	const struct uvc_ctrl_blacklist *blacklist;
-@@ -3577,6 +3589,9 @@
+@@ -3562,6 +3574,9 @@
  		if (!usb_match_one_id(dev->intf, &blacklist[i].id))
  			continue;
  

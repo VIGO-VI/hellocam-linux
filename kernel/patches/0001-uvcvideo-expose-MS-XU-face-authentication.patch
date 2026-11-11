@@ -1,6 +1,6 @@
 --- a/drivers/media/usb/uvc/uvc_ctrl.c
 +++ b/drivers/media/usb/uvc/uvc_ctrl.c
-@@ -36,8 +36,115 @@
+@@ -36,8 +36,100 @@
   * Controls
   */
  
@@ -88,21 +88,6 @@
 +	return 0;
 +}
 +
-+static const struct uvc_control_mapping uvc_ctrl_face_auth_mapping = {
-+	.id		= V4L2_CID_UVC_FACE_AUTHENTICATION,
-+	.entity		= UVC_GUID_MSXU_1_5,
-+	.selector	= UVC_MSXU_CONTROL_FACE_AUTHENTICATION,
-+	.size		= 8,
-+	.offset		= UVC_FACE_AUTH_FLAGS_OFFSET * 8,
-+	.v4l2_type	= V4L2_CTRL_TYPE_MENU,
-+	.data_type	= UVC_CTRL_DATA_TYPE_ENUM,
-+	.menu_mapping	= uvc_ctrl_face_auth_values,
-+	.menu_names	= uvc_ctrl_face_auth_names,
-+	.menu_mask	= GENMASK(UVC_FACE_AUTH_MAX_MODE, 0),
-+	.get		= uvc_get_face_auth,
-+	.set		= uvc_set_face_auth,
-+	.name		= "Face Authentication Mode",
-+};
 +
  static const struct uvc_control_info uvc_ctrls[] = {
  	{
@@ -116,7 +101,7 @@
  		.entity		= UVC_GUID_UVC_PROCESSING,
  		.selector	= UVC_PU_BRIGHTNESS_CONTROL,
  		.index		= 0,
-@@ -1091,6 +1198,21 @@
+@@ -1091,6 +1183,21 @@
  		.name		= "Region of Interest Auto Ctrls",
  	},
  	{

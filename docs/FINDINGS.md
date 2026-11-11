@@ -279,8 +279,11 @@ Measured with the quirk applied (out-of-tree build, `srcversion DFEE32B4…`):
 
 `v4l2-compliance` (v4l-utils 1.32.0) makes the case sharper: the RGB node
 scores **46/49 with three failures** on the distro driver — all of them this
-control — and **49/49 with the quirk**. The IR node is 48/49 either way, so its
-single failure is pre-existing and unrelated.
+control — and **49/49 with the quirk**. The IR node is 48/49 either way; that
+single failure is a v4l-utils bug (`af4a91dea9a2`, 2025-10-29: skip the
+`V4L2_CID_PRIVATE_BASE` check for UVC), newer than the 1.32.0 shipped here. It
+reproduces with the distro driver, with the patch, and with the RFC control
+removed.
 
 That is the whole case for the interface-scoped blacklist: the node people
 actually use goes from non-compliant to compliant, and the working IR control is

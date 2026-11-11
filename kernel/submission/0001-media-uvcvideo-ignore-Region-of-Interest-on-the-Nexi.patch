@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Your Name <you@example.com>
-Date: Wed, 11 Nov 2026 01:06:12 -0600
+Date: Wed, 11 Nov 2026 01:10:22 -0600
 Subject: [PATCH] media: uvcvideo: ignore Region of Interest on the NexiGo
  N930W RGB terminal
 
