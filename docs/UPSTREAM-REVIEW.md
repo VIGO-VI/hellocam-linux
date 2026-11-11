@@ -159,10 +159,25 @@ on one of its two terminals and stalls it on the other.
 `v4l2-compliance` (v4l-utils 1.32.0) on the two capture nodes, distribution
 driver versus the same driver with only this patch applied:
 
-| node | distribution driver | with the patch |
+Measured twice: with the distribution tool and with the fixed one.
+
+| node | distribution driver | with the patch only |
 |---|---|---|
-| RGB `/dev/video0` | **46/49, 3 failures, 1 warning** | **49/49, 0 failures** |
-| IR `/dev/video2` | 48/49, 1 failure | 48/49, 1 failure (identical) |
+| RGB `/dev/video0`, `v4l2-compliance 1.32.0` (distro) | **46/49, 3 failures** | **49/49, 0 failures** |
+| RGB `/dev/video0`, `v4l2-compliance 1.33.0-1` (git, fixed) | **45/48, 3 failures** | **48/48, 0 failures** |
+| IR `/dev/video2`, 1.32.0 | 48/49, 1 failure *(the tool bug below)* | 48/49, same |
+| IR `/dev/video2`, 1.33.0-1 | 49/49 | 49/49 |
+
+Two caveats to state before a reviewer finds them:
+
+* The 1.32.0 IR failure is the v4l-utils bug in the next paragraph. With the
+  fixed tool the IR node is 49/49 both with and without the patch, so the patch
+  does not affect it either way.
+* `focus_absolute` (`0x009a090a`) is intermittently reported out of range: once
+  as `16368` against a `1..1023` range while autofocus was running, later as
+  `240`. When that happens the newer tool fails two tests on the RGB node with
+  or without the patch. It is a separate, pre-existing oddity, not ROI and not
+  introduced here.
 
 The three RGB failures are all this control:
 

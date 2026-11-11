@@ -277,9 +277,11 @@ Measured with the quirk applied (out-of-tree build, `srcversion DFEE32B4…`):
 | `/dev/video0` (RGB, interface 0) | 19 controls **plus** `error 5 getting ext_ctrl Region of Interest Rectangle`, and `UVC non compliance: permanently disabling control 981ae2` | 19 controls, no error, no `dmesg` line |
 | `/dev/video2` (IR, interface 2) | ROI rectangle + auto controls | unchanged, both present, value preserved |
 
-`v4l2-compliance` (v4l-utils 1.32.0) makes the case sharper: the RGB node
-scores **46/49 with three failures** on the distro driver — all of them this
-control — and **49/49 with the quirk**. The IR node is 48/49 either way; that
+`v4l2-compliance` makes the case sharper: the RGB node scores **46/49 with
+three failures** on the distro driver (v4l-utils 1.32.0) — all of them this
+control — and **49/49 with the quirk**. With a locally built v4l-utils
+1.33.0-1 the same comparison is 45/48 → 48/48, and the IR node is 49/49 in
+both cases once the tool's own `V4L2_CID_PRIVATE_BASE` bug is fixed. The IR node is 48/49 either way; that
 single failure is a v4l-utils bug (`af4a91dea9a2`, 2025-10-29: skip the
 `V4L2_CID_PRIVATE_BASE` check for UVC), newer than the 1.32.0 shipped here. It
 reproduces with the distro driver, with the patch, and with the RFC control
