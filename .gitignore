@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# fetched upstream uvcvideo sources (kernel/fetch-sources.sh)
+kernel/uvc/*.c
+kernel/uvc/*.h
+kernel/uvc/Makefile.intree
+
+# out-of-tree kernel build products
+kernel/uvc/*.o
+kernel/uvc/.*.cmd
+kernel/uvc/*.ko
+kernel/uvc/*.mod
+kernel/uvc/*.mod.c
+kernel/uvc/modules.order
+kernel/uvc/Module.symvers
+kernel/uvc/uvcvideo.mod
+kernel/uvc/.module-common.o
+__pycache__/
+*.pyc

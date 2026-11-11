@@ -1,0 +1,1214 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
+"""
+hellocamctl - Linux userspace control for the NexiGo HelloCam (N930W family)
+dual-camera USB device (RGB + IR / Windows Hello).
+
+The device is a plain UVC 1.0 camera with a Microsoft extension unit (MS-XU,
+GUID {0f3f95dc-2632-4c4e-92c9-a04782f43bc8}) on each video control interface.
+uvcvideo exposes the standard units but ignores extension units whose GUID it
+does not know, so the IR illuminator / face-authentication mode and the frame
+metadata control are unreachable from V4L2.  This tool talks to those
+documented controls directly over usbfs, and refuses to touch anything the
+descriptors do not advertise.
+
+Safety rules (learned the hard way upstream, see irlume #159):
+  * never write to an extension unit selector the descriptor does not list in
+    bmControls;
+  * never guess a payload - build it from the device's own GET_DEF/GET_CUR;
+  * always keep the value read before a write so it can be restored.
+
+Run `hellocamctl info` without privileges.  Writing SET_CUR needs rw access to
+/dev/bus/usb/BBB/DDD; install packaging/99-hellocamctl.rules or run as root.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ctypes
+import errno
+import fcntl
+import os
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+import time
+import wave
+from dataclasses import dataclass, field
+
+# --------------------------------------------------------------------------
+# USB / UVC constants
+# --------------------------------------------------------------------------
+
+DESC_DEVICE = 0x01
+DESC_CONFIG = 0x02
+DESC_INTERFACE = 0x04
+DESC_CS_INTERFACE = 0x24
+
+SUB_VC_HEADER = 0x01
+SUB_INPUT_TERMINAL = 0x02
+SUB_OUTPUT_TERMINAL = 0x03
+SUB_PROCESSING_UNIT = 0x05
+SUB_EXTENSION_UNIT = 0x06
+
+ITT_CAMERA = 0x0201
+
+MS_CAMERA_CONTROL_XU = bytes(
+    [0xDC, 0x95, 0x3F, 0x0F, 0x32, 0x26, 0x4E, 0x4C,
+     0x92, 0xC9, 0xA0, 0x47, 0x82, 0xF4, 0x3B, 0xC8]
+)
+
+# UVC 1.1/1.5 control requests
+SET_CUR = 0x01
+GET_CUR = 0x81
+GET_MIN = 0x82
+GET_MAX = 0x83
+GET_RES = 0x84
+GET_LEN = 0x85
+GET_INFO = 0x86
+GET_DEF = 0x87
+
+REQ_NAMES = {
+    GET_CUR: "GET_CUR", GET_MIN: "GET_MIN", GET_MAX: "GET_MAX",
+    GET_RES: "GET_RES", GET_LEN: "GET_LEN", GET_INFO: "GET_INFO",
+    GET_DEF: "GET_DEF",
+}
+
+# MS-XU (Microsoft extensions to UVC 1.5) control selectors
+MSXU_FOCUS = 0x01
+MSXU_EXPOSURE = 0x02
+MSXU_EVCOMPENSATION = 0x03
+MSXU_WHITEBALANCE = 0x04
+MSXU_FACE_AUTHENTICATION = 0x06
+MSXU_CAMERA_EXTRINSICS = 0x07
+MSXU_CAMERA_INTRINSICS = 0x08
+MSXU_METADATA = 0x09
+MSXU_IR_TORCH = 0x0A
+MSXU_DIGITALWINDOW = 0x0B
+MSXU_DIGITALWINDOW_CONFIG = 0x0C
+MSXU_VIDEO_HDR = 0x0D
+MSXU_FRAMERATE_THROTTLE = 0x0E
+MSXU_FIELDOFVIEW2_CONFIG = 0x0F
+MSXU_FIELDOFVIEW2 = 0x10
+
+MSXU_NAMES = {
+    MSXU_FOCUS: "FOCUS",
+    MSXU_EXPOSURE: "EXPOSURE",
+    MSXU_EVCOMPENSATION: "EVCOMPENSATION",
+    MSXU_WHITEBALANCE: "WHITEBALANCE",
+    MSXU_FACE_AUTHENTICATION: "FACE_AUTHENTICATION",
+    MSXU_CAMERA_EXTRINSICS: "CAMERA_EXTRINSICS",
+    MSXU_CAMERA_INTRINSICS: "CAMERA_INTRINSICS",
+    MSXU_METADATA: "METADATA",
+    MSXU_IR_TORCH: "IR_TORCH",
+    MSXU_DIGITALWINDOW: "DIGITALWINDOW",
+    MSXU_DIGITALWINDOW_CONFIG: "DIGITALWINDOW_CONFIG",
+    MSXU_VIDEO_HDR: "VIDEO_HDR",
+    MSXU_FRAMERATE_THROTTLE: "FRAMERATE_THROTTLE",
+    MSXU_FIELDOFVIEW2_CONFIG: "FIELDOFVIEW2_CONFIG",
+    MSXU_FIELDOFVIEW2: "FIELDOFVIEW2",
+}
+
+# Face Authentication: 1 count byte, then 8-byte entries
+# { bInterfaceNumber, control flags (D0 general purpose, D1 alternating
+#   illumination, D2 continuous illumination), 6 reserved }
+FACE_AUTH_D0 = 0x01
+FACE_AUTH_D1 = 0x02
+FACE_AUTH_D2 = 0x04
+FACE_AUTH_ENTRY = 8
+
+USBDEVFS_CONTROL = 0xC0185500  # _IOWR('U', 0, struct usbdevfs_ctrltransfer)
+
+# USB ids that this tool understands out of the box.  --any lifts the filter
+# for descriptor inspection only.
+KNOWN_IDS = {
+    (0x3443, 0x930D): "NexiGo HelloCam Pro / N930W 60fps",
+    (0x3443, 0xC803): "NexiGo HelloCam N930W",
+}
+
+VIDEO_RE = "/sys/class/video4linux"
+
+# External programs, only needed by the optional capture/mic features.
+# Everything else is Python standard library only.
+OPTIONAL_TOOLS = {
+    "v4l2-ctl": "v4l-utils",
+    "arecord": "alsa-utils",
+}
+REQUIRED_PYTHON = (3, 8)
+
+
+# --------------------------------------------------------------------------
+# Small helpers
+# --------------------------------------------------------------------------
+
+class Error(Exception):
+    """User-facing failure."""
+
+
+def have(program: str) -> bool:
+    return shutil.which(program) is not None
+
+
+def read_attr(path, default=None):
+    try:
+        with open(path, "rb") as fh:
+            return fh.read().strip(b"\n").decode("ascii", "replace")
+    except OSError:
+        return default
+
+
+def read_int(path, default=0):
+    v = read_attr(path, None)
+    if v is None:
+        return default
+    try:
+        return int(v, 16) if v.lower().startswith("0x") else int(v)
+    except ValueError:
+        return default
+
+
+def read_hex(path, default=0):
+    """sysfs prints USB ids/versions in hex without a 0x prefix."""
+    v = read_attr(path, None)
+    if v is None:
+        return default
+    try:
+        return int(v, 16)
+    except ValueError:
+        return default
+
+
+def guid_str(raw: bytes) -> str:
+    """Format 16 descriptor bytes the way lsusb prints a GUID."""
+    if len(raw) != 16:
+        return raw.hex()
+    a, b, c, d, e = struct.unpack("<IHH", raw[:8]) + (raw[8:10], raw[10:])
+    return "{%08x-%04x-%04x-%s-%s}" % (a, b, c, d.hex(), e.hex())
+
+
+def bits(value: int, count: int) -> list[int]:
+    return [i + 1 for i in range(count) if value >> i & 1]
+
+
+# --------------------------------------------------------------------------
+# Descriptor model
+# --------------------------------------------------------------------------
+
+@dataclass
+class Unit:
+    kind: str
+    unit_id: int
+    interface: int          # VC interface the descriptor was found on
+    guid: bytes = b""
+    selectors: list[int] = field(default_factory=list)
+    num_controls: int = 0
+
+    @property
+    def is_msxu(self) -> bool:
+        return self.guid == MS_CAMERA_CONTROL_XU
+
+
+@dataclass
+class Chain:
+    """One UVC video function (VC interface + its streaming interfaces)."""
+    vc_interface: int
+    bcd_uvc: int
+    clock_hz: int
+    streaming: list[int] = field(default_factory=list)
+    units: list[Unit] = field(default_factory=list)
+
+    @property
+    def msxu(self) -> list[Unit]:
+        return [u for u in self.units if u.is_msxu]
+
+    @property
+    def msxu_with(self) -> dict[int, Unit]:
+        out = {}
+        for u in self.msxu:
+            for s in u.selectors:
+                out[s] = u
+        return out
+
+    @property
+    def ir_interface(self) -> int | None:
+        """Streaming interface that this chain's MS-XU offers face auth on."""
+        if MSXU_FACE_AUTHENTICATION in self.msxu_with and len(self.streaming) == 1:
+            return self.streaming[0]
+        return None
+
+
+@dataclass
+class Camera:
+    sysfs: str
+    vid: int
+    pid: int
+    product: str
+    serial: str
+    bus: int
+    dev: int
+    bcd_device: int
+    chains: list[Chain] = field(default_factory=list)
+    nodes: dict[int, list[str]] = field(default_factory=dict)  # iface -> /dev/videoN
+
+    @property
+    def usb_node(self) -> str:
+        return "/dev/bus/usb/%03d/%03d" % (self.bus, self.dev)
+
+
+def parse_config(blob: bytes, cam: Camera) -> None:
+    pos = 0
+    if blob and blob[0] == 18 and blob[1] == DESC_DEVICE:
+        pos = 18
+    chain = None
+    unit = None
+    in_video = False
+    while pos + 2 <= len(blob):
+        blen, btype = blob[pos], blob[pos + 1]
+        if blen < 2 or pos + blen > len(blob):
+            break
+        body = blob[pos:pos + blen]
+        if btype == DESC_INTERFACE and blen >= 9:
+            iface, alt = body[2], body[3]
+            cls, subcls = body[5], body[6]
+            unit = None
+            # Class-specific autio descriptors use the same descriptor type and
+            # subtype values as UVC ones; only parse them inside a video
+            # function.
+            in_video = cls == 0x0E and subcls == 0x01
+            if cls == 0x0E and subcls == 0x01 and alt == 0:
+                chain = Chain(iface, 0, 0)
+                cam.chains.append(chain)
+            elif cls == 0x0E and subcls == 0x02 and alt == 0 and chain is not None:
+                if iface not in chain.streaming:
+                    chain.streaming.append(iface)
+            elif not (cls == 0x0E and subcls == 0x02):
+                chain = None
+        elif btype == DESC_CS_INTERFACE and in_video and chain is not None and blen >= 4:
+            sub = body[2]
+            if sub == SUB_VC_HEADER and blen >= 12:
+                chain.bcd_uvc = body[3] | body[4] << 8
+                chain.clock_hz = struct.unpack_from("<I", body, 7)[0]
+                n = body[11]
+                for i in range(n):
+                    if 12 + i < blen:
+                        chain.streaming.append(body[12 + i])
+            elif sub == SUB_EXTENSION_UNIT and blen >= 24:
+                uid = body[3]
+                guid = body[4:20]
+                nctl = body[20]
+                npins = body[21]
+                off = 22 + npins
+                csize = body[off] if off < blen else 0
+                raw = body[off + 1:off + 1 + csize]
+                value = int.from_bytes(raw.ljust(8, b"\0"), "little")
+                unit = Unit("extension", uid, chain.vc_interface, guid,
+                            bits(value, nctl), nctl)
+                chain.units.append(unit)
+            elif sub == SUB_INPUT_TERMINAL and blen >= 15:
+                ttype = struct.unpack_from("<H", body, 4)[0]
+                if ttype == ITT_CAMERA and blen >= 15:
+                    csize = body[14]
+                    raw = body[15:15 + csize]
+                    chain.units.append(
+                        Unit("camera-terminal", body[3], chain.vc_interface,
+                             selectors=bits(int.from_bytes(raw, "little"), csize * 8),
+                             num_controls=csize * 8))
+            elif sub == SUB_OUTPUT_TERMINAL and blen >= 9:
+                chain.units.append(Unit("output-terminal", body[3], chain.vc_interface))
+            elif sub == SUB_PROCESSING_UNIT and blen >= 8:
+                csize = body[7]
+                raw = body[8:8 + csize]
+                chain.units.append(
+                    Unit("processing-unit", body[3], chain.vc_interface,
+                         selectors=bits(int.from_bytes(raw, "little"), csize * 8),
+                         num_controls=csize * 8))
+        pos += blen
+
+
+def map_video_nodes(cam: Camera) -> None:
+    """iface number -> ['/dev/videoN', ...] for this USB device."""
+    base = os.path.basename(cam.sysfs)
+    for entry in sorted(os.listdir(VIDEO_RE)):
+        dev = os.path.join(VIDEO_RE, entry, "device")
+        try:
+            real = os.path.realpath(dev)
+        except OSError:
+            continue
+        if os.path.basename(real).startswith(base + ":"):
+            # "1-2.1:1.3" is <bus>-<port>:<configuration>.<interface>
+            iface = int(os.path.basename(real).rsplit(".", 1)[1])
+            cam.nodes.setdefault(iface, []).append("/dev/" + entry)
+
+
+def discover(any_id: bool = False) -> list[Camera]:
+    base = "/sys/bus/usb/devices"
+    out = []
+    for name in sorted(os.listdir(base)):
+        path = os.path.join(base, name)
+        vid = read_hex(os.path.join(path, "idVendor"), 0)
+        pid = read_hex(os.path.join(path, "idProduct"), 0)
+        if not vid or not pid:
+            continue
+        if not any_id and (vid, pid) not in KNOWN_IDS:
+            continue
+        cam = Camera(
+            sysfs=path, vid=vid, pid=pid,
+            product=read_attr(os.path.join(path, "product"), "?"),
+            serial=read_attr(os.path.join(path, "serial"), ""),
+            bus=read_int(os.path.join(path, "busnum")),
+            dev=read_int(os.path.join(path, "devnum")),
+            bcd_device=read_hex(os.path.join(path, "bcdDevice")),
+        )
+        try:
+            with open(os.path.join(path, "descriptors"), "rb") as fh:
+                parse_config(fh.read(), cam)
+        except OSError as exc:
+            raise Error("cannot read %s/descriptors: %s" % (path, exc))
+        map_video_nodes(cam)
+        out.append(cam)
+    return out
+
+
+def pick_camera(args) -> Camera:
+    cams = discover(any_id=getattr(args, "any_id", False))
+    if not cams:
+        raise Error("no supported camera found (known ids: %s)"
+                    % ", ".join("%04x:%04x" % k for k in KNOWN_IDS))
+    if len(cams) > 1:
+        raise Error("more than one camera found; unplug one")
+    return cams[0]
+
+
+# --------------------------------------------------------------------------
+# usbfs transport
+# --------------------------------------------------------------------------
+
+class Usb:
+    def __init__(self, cam: Camera, write: bool):
+        self.cam = cam
+        # usbfs refuses every ioctl on a read-only descriptor, so the node is
+        # always opened read/write; `write` gates SET_CUR in this process.
+        try:
+            self.fd = os.open(cam.usb_node, os.O_RDWR)
+        except PermissionError:
+            raise Error(
+                "no %s access to %s.\n"
+                "Install packaging/99-hellocamctl.rules (needs root once) or run "
+                "this command as root." % ("read/write" if write else "read", cam.usb_node))
+        self.write = write
+
+    def close(self):
+        os.close(self.fd)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+    def _ctrl(self, request, iface, unit, selector, length, data=None):
+        in_dir = request & 0x80
+        buf = ctypes.create_string_buffer(bytes(data or b""), length)
+        ct = _CtrlTransfer(
+            bRequestType=0xA1 if in_dir else 0x21,
+            bRequest=request,
+            wValue=selector << 8,
+            wIndex=(unit << 8) | iface,
+            wLength=length,
+            timeout=2000,
+            data=ctypes.addressof(buf),
+        )
+        try:
+            fcntl.ioctl(self.fd, USBDEVFS_CONTROL, ct)
+        except OSError as exc:
+            raise Error("control xfer unit %d sel 0x%02x %s failed: %s"
+                        % (unit, selector, REQ_NAMES.get(request, hex(request)),
+                           errno.errorcode.get(exc.errno, exc)))
+        return buf.raw
+
+    def get(self, iface, unit, selector, request, length=None):
+        if length is None:
+            length = self.length(iface, unit, selector)
+        return self._ctrl(request, iface, unit, selector, length)
+
+    def set(self, iface, unit, selector, payload):
+        if not self.write:
+            raise Error("read-only handle")
+        self._ctrl(SET_CUR, iface, unit, selector, len(payload), payload)
+
+    def length(self, iface, unit, selector):
+        raw = self._ctrl(GET_LEN, iface, unit, selector, 2)
+        return struct.unpack("<H", raw)[0]
+
+    def info(self, iface, unit, selector):
+        raw = self._ctrl(GET_INFO, iface, unit, selector, 1)
+        return raw[0]
+
+
+class V4l2Xu:
+    """uvcvideo's own extension-unit pass-through.
+
+    `UVCIOC_CTRL_QUERY` addresses a control by (unit id, selector) on the
+    chain behind a video node and issues exactly the UVC class request asked
+    for.  The driver only creates controls the descriptor advertises, so an
+    unadvertised selector fails with ENOENT instead of reaching the device -
+    that is the safety property this tool relies on.
+    """
+
+    UVCIOC_CTRL_QUERY = 0xC0107521  # _IOWR('u', 0x21, uvc_xu_control_query)
+
+    class _Query(ctypes.Structure):
+        _fields_ = [
+            ("unit", ctypes.c_uint8),
+            ("selector", ctypes.c_uint8),
+            ("query", ctypes.c_uint8),
+            ("size", ctypes.c_uint16),
+            ("data", ctypes.c_void_p),
+        ]
+
+    def __init__(self, node: str, write: bool):
+        self.node = node
+        self.write = write
+        try:
+            self.fd = os.open(node, os.O_RDWR if write else os.O_RDONLY)
+        except PermissionError:
+            raise Error("no access to %s" % node)
+
+    def close(self):
+        os.close(self.fd)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+    def _xfer(self, unit, selector, query, payload):
+        buf = ctypes.create_string_buffer(bytes(payload) or b"\0" * 64,
+                                          max(len(payload), 1))
+        q = self._Query(unit=unit, selector=selector, query=query,
+                        size=len(payload), data=ctypes.addressof(buf))
+        try:
+            fcntl.ioctl(self.fd, self.UVCIOC_CTRL_QUERY, q)
+        except OSError as exc:
+            raise Error("UVCIOC_CTRL_QUERY unit %d sel 0x%02x %s on %s failed: %s"
+                        % (unit, selector, REQ_NAMES.get(query, hex(query)),
+                           self.node,
+                           errno.errorcode.get(exc.errno, exc)))
+        return buf.raw[:len(payload)]
+
+    def info(self, iface, unit, selector):
+        return self._xfer(unit, selector, GET_INFO, b"\0")[0]
+
+    def length(self, iface, unit, selector):
+        return struct.unpack("<H", self._xfer(unit, selector, GET_LEN, b"\0\0"))[0]
+
+    def get(self, iface, unit, selector, request, length=None):
+        if length is None:
+            length = self.length(iface, unit, selector)
+        return self._xfer(unit, selector, request, b"\0" * length)
+
+    def set(self, iface, unit, selector, payload):
+        if not self.write:
+            raise Error("read-only handle on %s" % self.node)
+        self._xfer(unit, selector, SET_CUR, payload)
+
+
+class _CtrlTransfer(ctypes.Structure):
+    _fields_ = [
+        ("bRequestType", ctypes.c_uint8),
+        ("bRequest", ctypes.c_uint8),
+        ("wValue", ctypes.c_uint16),
+        ("wIndex", ctypes.c_uint16),
+        ("wLength", ctypes.c_uint16),
+        ("timeout", ctypes.c_uint32),
+        ("data", ctypes.c_void_p),
+    ]
+
+
+def chain_node(cam: Camera, chain: Chain) -> str:
+    """The capture video node that owns `chain` (needed for UVCIOC_CTRL_QUERY)."""
+    for node in cam.nodes.get(chain.vc_interface, []):
+        if v4l2_caps(node).get("capture"):
+            return node
+    raise Error("no capture node for the UVC chain on interface %d"
+                % chain.vc_interface)
+
+
+def open_xu(cam: Camera, chain: Chain, write: bool):
+    """Extension-unit transport for `chain`.
+
+    uvcvideo's UVCIOC_CTRL_QUERY is preferred: it needs no privileges and no
+    udev rule, and the driver already refuses selectors the descriptor does not
+    advertise.  --usbfs or a driver without the ioctl falls back to raw usbfs.
+    """
+    if getattr(cam, "force_usbfs", False):
+        return Usb(cam, write=write)
+    return V4l2Xu(chain_node(cam, chain), write=write)
+
+
+def require_msxu(cam: Camera, selector: int) -> tuple[Chain, Unit]:
+    for chain in cam.chains:
+        unit = chain.msxu_with.get(selector)
+        if unit is not None:
+            return chain, unit
+    raise Error(
+        "this camera's Microsoft XU does not advertise selector 0x%02x (%s)"
+        % (selector, MSXU_NAMES.get(selector, "?")))
+
+
+# --------------------------------------------------------------------------
+# Face authentication payload <-> readable form
+# --------------------------------------------------------------------------
+
+def parse_face_auth(payload: bytes) -> list[dict]:
+    if not payload:
+        return []
+    count = payload[0]
+    out = []
+    for i in range(count):
+        off = 1 + i * FACE_AUTH_ENTRY
+        entry = payload[off:off + FACE_AUTH_ENTRY]
+        if len(entry) < FACE_AUTH_ENTRY:
+            break
+        flags = entry[1]
+        modes = []
+        if flags & FACE_AUTH_D0:
+            modes.append("D0:general-purpose")
+        if flags & FACE_AUTH_D1:
+            modes.append("D1:alternating-illumination")
+        if flags & FACE_AUTH_D2:
+            modes.append("D2:continuous-illumination")
+        out.append({"interface": entry[0], "flags": flags,
+                    "modes": modes or ["<none>"]})
+    return out
+
+
+def build_face_auth(payload: bytes, iface: int, flags: int) -> bytes:
+    """Return `payload` with `iface` set to `flags`, leaving other entries."""
+    count = payload[0]
+    entries = [list(payload[1 + i * FACE_AUTH_ENTRY:1 + (i + 1) * FACE_AUTH_ENTRY])
+               for i in range(count)]
+    for entry in entries:
+        if entry and entry[0] == iface:
+            entry[1] = flags
+    for entry in entries:
+        if not entry:
+            raise Error("malformed face-auth payload from device: %r" % payload)
+    if all(e[0] != iface for e in entries):
+        if count >= 8:
+            raise Error("device reports no free face-auth entry for iface %d" % iface)
+        entries.append([iface, flags] + [0] * (FACE_AUTH_ENTRY - 2))
+    return bytes([len(entries)]) + b"".join(bytes(e) for e in entries)
+
+
+# --------------------------------------------------------------------------
+# Video capture helpers (v4l2-ctl, present on any distro with v4l-utils)
+# --------------------------------------------------------------------------
+
+def ir_node(cam: Camera) -> str:
+    for chain in cam.chains:
+        if chain.ir_interface is not None:
+            for node in cam.nodes.get(chain.vc_interface, []):
+                if v4l2_caps(node).get("capture"):
+                    return node
+    raise Error("cannot locate the IR video node for this camera")
+
+
+def v4l2_caps(node: str) -> dict:
+    """VIDIOC_QUERYCAP, minimal."""
+    try:
+        fd = os.open(node, os.O_RDWR | os.O_NONBLOCK)
+    except OSError:
+        return {}
+    try:
+        buf = bytearray(104)
+        fcntl.ioctl(fd, 0x80685600, buf, True)  # VIDIOC_QUERYCAP
+        driver = bytes(buf[0:16]).split(b"\0")[0].decode()
+        card = bytes(buf[16:48]).split(b"\0")[0].decode()
+        caps, dcaps = struct.unpack_from("<II", buf, 84)
+        return {"driver": driver, "card": card, "capture": bool(dcaps & 1),
+                "metadata": bool(dcaps & 0x00800000)}
+    except OSError:
+        return {}
+    finally:
+        os.close(fd)
+
+
+def grab_frames(node: str, count: int = 20, timeout: int = 8) -> list[bytes] | None:
+    """Grab GREY frames from an IR node, return raw frames."""
+    if not have("v4l2-ctl"):
+        raise Error("v4l2-ctl not found: install v4l-utils")
+    fmt = []
+    if "ir" in node.lower() or _is_grey(node):
+        fmt = ["--set-fmt-video=width=640,height=360,pixelformat=GREY"]
+    fd, path = tempfile.mkstemp(prefix="hellocamctl-", suffix=".raw")
+    os.close(fd)
+    cmd = (["v4l2-ctl", "-d", node] + fmt +
+           ["--stream-mmap=4", "--stream-count=%d" % count, "--stream-to", path])
+    try:
+        subprocess.run(cmd, check=True, timeout=timeout,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        with open(path, "rb") as fh:
+            blob = fh.read()
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        return None
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    size = 640 * 360
+    if len(blob) < size:
+        return None
+    return [blob[i:i + size] for i in range(0, len(blob) - size + 1, size)]
+
+
+def _is_grey(node: str) -> bool:
+    try:
+        out = subprocess.run(["v4l2-ctl", "-d", node, "--list-formats"],
+                             capture_output=True, text=True, timeout=5).stdout
+        return "'GREY'" in out
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def frame_stats(frames: list[bytes], tail: int = 0) -> dict:
+    """Brightness statistics.  `tail` drops the first frames: the IR sensor's
+    auto-exposure ramps for ~2 s after a stream starts."""
+    means = [sum(f) / len(f) for f in frames]
+    if tail:
+        means = means[-tail:]
+    return {"frames": len(means),
+            "mean": round(sum(means) / len(means), 2),
+            "min_mean": round(min(means), 2),
+            "max_mean": round(max(means), 2)}
+
+
+# --------------------------------------------------------------------------
+# Commands
+# --------------------------------------------------------------------------
+
+def cmd_info(args) -> int:
+    for cam in discover(any_id=args.any_id):
+        label = KNOWN_IDS.get((cam.vid, cam.pid), "unrecognised")
+        print("camera   : %04x:%04x  %s  (%s)" % (cam.vid, cam.pid, cam.product, label))
+        print("usb      : %s  (bus %d dev %d, bcdDevice %d.%02d)"
+              % (cam.usb_node, cam.bus, cam.dev,
+                 cam.bcd_device >> 8, cam.bcd_device & 0xFF))
+        print("serial   : %s" % (cam.serial or "-"))
+        for chain in cam.chains:
+            ir = chain.ir_interface
+            print("\n  UVC %d.%02x chain on control interface %d, clock %d Hz"
+                  % (chain.bcd_uvc >> 8, chain.bcd_uvc & 0xFF,
+                     chain.vc_interface, chain.clock_hz))
+            print("    streaming interfaces : %s" %
+                  ", ".join(str(i) for i in chain.streaming))
+            for node in cam.nodes.get(chain.vc_interface, []):
+                caps = v4l2_caps(node)
+                kind = "capture" if caps.get("capture") else \
+                       "metadata" if caps.get("metadata") else "?"
+                print("    node                 : %-13s %s" % (node, kind))
+            for unit in chain.units:
+                if unit.kind == "extension":
+                    tag = "MS-XU" if unit.is_msxu else "vendor XU"
+                    print("    %-8s unit %-2d %s controls=%d advertised=%s"
+                          % (tag, unit.unit_id, guid_str(unit.guid),
+                             unit.num_controls,
+                             ",".join("0x%02x" % s for s in unit.selectors) or "-"))
+                    if unit.is_msxu:
+                        for s in unit.selectors:
+                            print("               selector 0x%02x = %s"
+                                  % (s, MSXU_NAMES.get(s, "reserved")))
+                elif unit.kind in ("camera-terminal", "processing-unit"):
+                    print("    %-8s unit %-2d selectors=%s"
+                          % (unit.kind.split("-")[0], unit.unit_id,
+                             ",".join(str(s) for s in unit.selectors) or "-"))
+            if ir is not None:
+                print("    -> IR streaming interface: %d" % ir)
+    return 0
+
+
+def cmd_xu(args) -> int:
+    cam = pick_camera(args)
+    cam.force_usbfs = args.usbfs
+    for chain in cam.chains:
+        with open_xu(cam, chain, write=False) as usb:
+            units = [u for u in chain.units if u.kind == "extension"]
+            if args.unit is not None:
+                units = [u for u in units if u.unit_id == args.unit]
+            for unit in units:
+                print("unit %d on interface %d  %s%s"
+                      % (unit.unit_id, chain.vc_interface, guid_str(unit.guid),
+                         "  [MS-XU]" if unit.is_msxu else ""))
+                sels = args.selector or unit.selectors
+                for sel in sels:
+                    advertised = sel in unit.selectors
+                    if not advertised:
+                        if not args.probe:
+                            print("  sel 0x%02x  not advertised in bmControls - "
+                                  "refused (use --probe for a read-only GET_INFO)"
+                                  % sel)
+                            continue
+                        print("  sel 0x%02x  NOT ADVERTISED - read-only probe" % sel)
+                    try:
+                        info = usb.info(chain.vc_interface, unit.unit_id, sel)
+                        length = usb.length(chain.vc_interface, unit.unit_id, sel)
+                    except Error as exc:
+                        print("  sel 0x%02x  %s" % (sel, exc))
+                        continue
+                    caps = []
+                    for bit, name in ((0, "GET"), (1, "SET"), (2, "AUTOUPDATE"),
+                                      (3, "ASYNC")):
+                        if info >> bit & 1:
+                            caps.append(name)
+                    line = ("  sel 0x%02x %-22s info=0x%02x [%s] len=%d"
+                            % (sel, MSXU_NAMES.get(sel, "") if unit.is_msxu else "",
+                               info, ",".join(caps) or "-", length))
+                    if advertised and "GET" in caps and 0 < length <= 64:
+                        vals = {}
+                        # MS-XU Face Authentication GET_MIN/GET_RES carry no
+                        # payload (bNumEntries == 0) but the driver still asks
+                        # for the full length, which logs a "non compliance"
+                        # warning.  Don't provoke it.
+                        skip = (unit.is_msxu and sel == MSXU_FACE_AUTHENTICATION)
+                        getters = [(GET_CUR, "cur"), (GET_DEF, "def"),
+                                   (GET_MAX, "max")]
+                        if not skip:
+                            getters[1:1] = [(GET_MIN, "min")]
+                            getters.append((GET_RES, "res"))
+                        for req, name in getters:
+                            try:
+                                vals[name] = usb.get(chain.vc_interface, unit.unit_id,
+                                                     sel, req, length).hex()
+                            except Error:
+                                vals[name] = "-"
+                        line += "  " + " ".join("%s=%s" % (k, v) for k, v in vals.items())
+                    print(line)
+    return 0
+
+
+def _face_auth_ctx(cam, usb, write):
+    chain, unit = require_msxu(cam, MSXU_FACE_AUTHENTICATION)
+    iface = chain.vc_interface
+    uid = unit.unit_id
+    cur = usb.get(iface, uid, MSXU_FACE_AUTHENTICATION, GET_CUR)
+    return chain, unit, cur
+
+
+def cmd_ir(args) -> int:
+    cam = pick_camera(args)
+    cam.force_usbfs = getattr(args, "usbfs", False)
+    write = args.action in ("on", "off", "default")
+    chain, unit = require_msxu(cam, MSXU_FACE_AUTHENTICATION)
+    with open_xu(cam, chain, write=write) as usb:
+        chain, unit, cur = _face_auth_ctx(cam, usb, write)
+        uid, iface = unit.unit_id, chain.vc_interface
+        target_iface = chain.ir_interface
+        if target_iface is None:
+            raise Error("this chain's MS-XU does not map to exactly one IR "
+                        "streaming interface")
+        current = parse_face_auth(cur)
+        print("face authentication control: unit %d on interface %d" % (uid, iface))
+        print("  streaming interfaces: %s" % chain.streaming)
+        print("  GET_CUR: %s  %s" % (cur.hex(), _fmt_entries(current)))
+        if args.action == "status":
+            return 0
+
+        if args.action == "default":
+            payload = usb.get(iface, uid, MSXU_FACE_AUTHENTICATION, GET_DEF,
+                              len(cur))
+        else:
+            flags = FACE_AUTH_D1 if args.action == "on" else FACE_AUTH_D0
+            payload = build_face_auth(cur, target_iface, flags)
+        if len(payload) < len(cur):
+            payload = payload.ljust(len(cur), b"\0")
+
+        print("  SET_CUR: %s  %s" % (payload.hex(), _fmt_entries(parse_face_auth(payload))))
+        usb.set(iface, uid, MSXU_FACE_AUTHENTICATION, payload)
+        back = usb.get(iface, uid, MSXU_FACE_AUTHENTICATION, GET_CUR, len(payload))
+        ok = back == payload
+        print("  GET_CUR: %s  %s" % (back.hex(), _fmt_entries(parse_face_auth(back))))
+        print("  read-back %s" % ("matches" if ok else "DIFFERS"))
+        return 0 if ok else 1
+
+
+def _fmt_entries(entries) -> str:
+    if not entries:
+        return "(none)"
+    return "; ".join("iface %d: %s" % (e["interface"], "/".join(e["modes"]))
+                     for e in entries)
+
+
+def cmd_meta(args) -> int:
+    cam = pick_camera(args)
+    cam.force_usbfs = getattr(args, "usbfs", False)
+    write = args.action in ("on", "off")
+    chain, unit = require_msxu(cam, MSXU_METADATA)
+    with open_xu(cam, chain, write=write) as usb:
+        uid, iface = unit.unit_id, chain.vc_interface
+        cur = usb.get(iface, uid, MSXU_METADATA, GET_CUR, 4)
+        mx = usb.get(iface, uid, MSXU_METADATA, GET_MAX, 4)
+        print("metadata control: unit %d iface %d  cur=%s max=%s"
+              % (uid, iface, cur.hex(), mx.hex()))
+        if args.action == "status":
+            return 0
+        value = struct.unpack("<I", mx)[0] if args.action == "on" else 0
+        usb.set(iface, uid, MSXU_METADATA, struct.pack("<I", value))
+        back = usb.get(iface, uid, MSXU_METADATA, GET_CUR, 4)
+        print("  set %d -> GET_CUR %s" % (value, back.hex()))
+        return 0
+
+
+# Linux 7.x exposes the MS-XU face authentication control natively once the
+# driver maps it; see kernel/patches/.  The id is the driver's private user-class
+# control in the proof of concept.
+FACE_AUTH_CID = 0x00981900
+VIDIOC_G_CTRL = 0xC008561B
+VIDIOC_S_CTRL = 0xC008561C
+FACE_AUTH_MODES = {0: "general purpose", 1: "alternating illumination",
+                   2: "continuous illumination"}
+
+
+def v4l2_face_auth(node: str):
+    """Return (read, write) for the native control, or None if absent."""
+    try:
+        fd = os.open(node, os.O_RDWR)
+    except OSError:
+        return None
+
+    def read():
+        buf = bytearray(struct.pack("<iI", FACE_AUTH_CID, 0))
+        fcntl.ioctl(fd, VIDIOC_G_CTRL, buf, True)
+        return struct.unpack("<iI", bytes(buf))[1]
+
+    def write(mode):
+        fcntl.ioctl(fd, VIDIOC_S_CTRL, struct.pack("<iI", FACE_AUTH_CID, mode))
+
+    try:
+        read()
+    except OSError:
+        os.close(fd)
+        return None
+    return fd, read, write
+
+
+def cmd_v4l2test(args) -> int:
+    """Prove the kernel control drives the illuminator, with no helper path."""
+    cam = pick_camera(args)
+    node = ir_node(cam)
+    backend = v4l2_face_auth(node)
+    if backend is None:
+        raise Error("no native face authentication control on %s "
+                    "(is the proof-of-concept uvcvideo loaded?)" % node)
+    fd, read, write = backend
+    results = []
+
+    def check(name, ok, detail=""):
+        results.append(ok)
+        print("[%s] %s%s" % ("PASS" if ok else "FAIL", name,
+                             ("  - " + detail) if detail else ""))
+
+    try:
+        check("native V4L2 control present on %s" % node, True,
+              "id 0x%08x, current mode %d (%s)"
+              % (FACE_AUTH_CID, read(), FACE_AUTH_MODES.get(read(), "?")))
+        original = read()
+
+        write(1)
+        check("VIDIOC_S_CTRL mode 1 accepted", read() == 1, "read back 1")
+        lit = grab_frames(node, args.frames + 30) or []
+
+        write(0)
+        check("VIDIOC_S_CTRL mode 0 accepted", read() == 0, "read back 0")
+        dark = grab_frames(node, args.frames + 30) or []
+
+        if lit and dark:
+            a = frame_stats(lit, tail=args.frames)
+            b = frame_stats(dark, tail=args.frames)
+            print("     IR mean in mode 1: %6.2f   mode 0: %6.2f"
+                  % (a["mean"], b["mean"]))
+            span = max(x for x in (abs(a["mean"] - b["mean"]),)) 
+            check("mode changes the IR image", span > 0.5, "delta %.2f" % span)
+        else:
+            check("IR frames captured", False)
+    finally:
+        write(original)
+        check("restored mode %d" % original, read() == original)
+        os.close(fd)
+
+    print("\n%d/%d checks passed" % (sum(results), len(results)))
+    return 0 if all(results) else 1
+
+
+def cmd_doctor(args) -> int:
+    """Check that the things this tool depends on are actually present."""
+    ok = True
+
+    def line(state, what, detail=""):
+        nonlocal ok
+        ok = ok and state
+        print("[%s] %-28s %s" % ("ok" if state else "!!", what, detail))
+
+    v = sys.version_info
+    line(v[:2] >= REQUIRED_PYTHON, "python",
+         "%d.%d.%d (need >= %d.%d)"
+         % (v.major, v.minor, v.micro, *REQUIRED_PYTHON))
+    for tool, package in OPTIONAL_TOOLS.items():
+        line(have(tool) or not args.strict, tool,
+             "found" if have(tool) else "missing (install %s)" % package)
+
+    try:
+        cams = discover(any_id=False)
+    except Error as exc:
+        cams = []
+        line(False, "descriptor read", str(exc))
+    line(bool(cams), "supported camera", " ".join(
+        "%04x:%04x" % (c.vid, c.pid) for c in cams) or "not found")
+    if cams:
+        cam = cams[0]
+        chain, unit = require_msxu(cam, MSXU_FACE_AUTHENTICATION)
+        line(True, "MS-XU face authentication",
+             "unit %d, iface %d" % (unit.unit_id, chain.vc_interface))
+        node = chain_node(cam, chain)
+        caps = v4l2_caps(node)
+        line(bool(caps), "IR node", "%s %s" % (node, caps.get("driver", "")))
+        try:
+            os.close(os.open(node, os.O_RDWR))
+            line(True, "IR node writable", "control writes will work")
+        except OSError as exc:
+            line(False, "IR node writable", str(exc))
+    print("\n%s" % ("all good" if ok else "problems above"))
+    return 0 if ok else 1
+
+
+def cmd_mic(args) -> int:
+    """Record from the camera's own capture device and report the level."""
+    cam = pick_camera(args)
+    card = None
+    want = "%04x:%04x" % (cam.vid, cam.pid)
+    for name in sorted(os.listdir("/proc/asound")):
+        if name.startswith("card") and \
+                read_attr("/proc/asound/%s/usbid" % name, "") == want:
+            card = name[4:]
+    if card is None:
+        raise Error("no ALSA card for this camera")
+    if not have("arecord"):
+        raise Error("arecord not found: install alsa-utils")
+    fd, path = tempfile.mkstemp(prefix="hellocamctl-", suffix=".wav")
+    os.close(fd)
+    cmd = ["arecord", "-D", "hw:%s,0" % card, "-f", "S16_LE", "-r", "48000",
+           "-c", "2", "-d", str(args.seconds), path]
+    try:
+        subprocess.run(cmd, check=True, timeout=args.seconds + 5,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        with wave.open(path) as w:
+            raw = w.readframes(w.getnframes())
+            frames = w.getnframes()
+    except (subprocess.SubprocessError, OSError, wave.Error) as exc:
+        raise Error("recording failed: %s" % exc)
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    samples = struct.unpack("<%dh" % (len(raw) // 2), raw)
+    peak = max(abs(v) for v in samples)
+    print("card %s: %d frames at 48 kHz (%.1f s), peak amplitude %d"
+          % (card, frames, frames / 48000.0, peak))
+    print("verdict: %s" % ("SILENT (all samples zero)" if peak == 0
+                           else "audio present"))
+    return 0 if peak else 1
+
+
+def cmd_capture(args) -> int:
+    cam = pick_camera(args)
+    node = ir_node(cam)
+    print("IR node: %s" % node)
+    frames = grab_frames(node, args.frames)
+    if frames is None:
+        raise Error("IR capture failed")
+    print("IR capture: %s" % frame_stats(frames))
+    if args.combined:
+        rgb = next((n for c in cam.chains for n in cam.nodes.get(c.vc_interface, [])
+                    if v4l2_caps(n).get("capture")
+                    and c.ir_interface is None and n != node), None)
+        if rgb:
+            bg = subprocess.Popen(
+                ["timeout", "12", "v4l2-ctl", "-d", rgb, "--stream-mmap=2",
+                 "--stream-count=200"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                time.sleep(1)
+                frames = grab_frames(node, args.frames)
+                print("IR capture while %s streams: %s"
+                      % (rgb, frame_stats(frames) if frames else "FAILED"))
+            finally:
+                bg.terminate()
+                bg.wait(timeout=5)
+    return 0
+
+
+def cmd_test(args) -> int:
+    """Prove the emitter path end to end.  This is the acceptance test."""
+    cam = pick_camera(args)
+    results = []
+
+    def check(name, ok, detail=""):
+        results.append((name, ok, detail))
+        print("[%s] %s%s" % ("PASS" if ok else "FAIL", name,
+                             ("  - " + detail) if detail else ""))
+
+    node = ir_node(cam)
+    check("IR video node present", True, node)
+
+    chain, unit = require_msxu(cam, MSXU_FACE_AUTHENTICATION)
+    with open_xu(cam, chain, write=True) as usb:
+        chain, unit = require_msxu(cam, MSXU_FACE_AUTHENTICATION)
+        uid, iface = unit.unit_id, chain.vc_interface
+        check("MS-XU advertises FACE_AUTHENTICATION",
+              MSXU_FACE_AUTHENTICATION in unit.selectors,
+              "unit %d iface %d %s" % (uid, iface, guid_str(unit.guid)))
+        check("MS-XU advertises METADATA",
+              MSXU_METADATA in [s for u in chain.msxu for s in u.selectors])
+
+        info = usb.info(iface, uid, MSXU_FACE_AUTHENTICATION)
+        check("face auth supports GET+SET",
+              bool(info & 1) and bool(info & 2), "info=0x%02x" % info)
+
+        cur = usb.get(iface, uid, MSXU_FACE_AUTHENTICATION, GET_CUR)
+        original = cur
+        entries = parse_face_auth(cur)
+        check("GET_DEF readable", True,
+              usb.get(iface, uid, MSXU_FACE_AUTHENTICATION, GET_DEF,
+                      len(cur)).hex())
+        check("current mode decoded", bool(entries), _fmt_entries(entries))
+
+        ir_iface = chain.ir_interface
+        check("IR streaming interface identified",
+              ir_iface in [e["interface"] for e in entries],
+              "iface %s" % ir_iface)
+
+        def set_mode(flags):
+            payload = build_face_auth(original, ir_iface, flags)
+            usb.set(iface, uid, MSXU_FACE_AUTHENTICATION, payload)
+            back = usb.get(iface, uid, MSXU_FACE_AUTHENTICATION, GET_CUR,
+                           len(payload))
+            return payload, back
+
+        try:
+            payload_on, back_on = set_mode(FACE_AUTH_D1)
+            check("SET_CUR D1 (illuminator strobing)", back_on == payload_on,
+                  back_on.hex())
+            lit = grab_frames(node, args.frames + 30) or []
+            time.sleep(0.3)
+
+            payload_off, back_off = set_mode(FACE_AUTH_D0)
+            check("SET_CUR D0 (illumination off)", back_off == payload_off,
+                  back_off.hex())
+            dark = grab_frames(node, args.frames + 30) or []
+            time.sleep(0.3)
+
+            if lit and dark:
+                a = frame_stats(lit, tail=args.frames)
+                b = frame_stats(dark, tail=args.frames)
+                print("     IR mean with D1: %6.2f   with D0: %6.2f"
+                      % (a["mean"], b["mean"]))
+                check("illuminator changes the IR image",
+                      abs(a["mean"] - b["mean"]) > 0.5,
+                      "delta %.2f" % (a["mean"] - b["mean"]))
+            else:
+                check("IR frames captured", False)
+        finally:
+            usb.set(iface, uid, MSXU_FACE_AUTHENTICATION, original)
+            back = usb.get(iface, uid, MSXU_FACE_AUTHENTICATION, GET_CUR,
+                           len(original))
+            check("restored original value", back == original, back.hex())
+
+    failed = [r for r in results if not r[1]]
+    print("\n%d/%d checks passed" % (len(results) - len(failed), len(results)))
+    return 1 if failed else 0
+
+
+def cmd_dump(args) -> int:
+    cam = pick_camera(args)
+    print("usb node: %s" % cam.usb_node)
+    for chain in cam.chains:
+        for unit in chain.units:
+            print("%-16s unit %-2d iface %d selectors=%s"
+                  % (unit.kind, unit.unit_id, unit.interface,
+                     ",".join("0x%02x" % s for s in unit.selectors) or "-"))
+    return 0
+
+
+# --------------------------------------------------------------------------
+
+def main(argv=None) -> int:
+    p = argparse.ArgumentParser(prog="hellocamctl", description=__doc__.split("\n")[1])
+    p.add_argument("--any-id", action="store_true",
+                   help="inspect any USB device with a UVC descriptor")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("info", help="print the UVC descriptor model of the camera")
+    s.set_defaults(func=cmd_info)
+
+    s = sub.add_parser("dump", help="list units and advertised selectors (short)")
+    s.set_defaults(func=cmd_dump)
+
+    s = sub.add_parser("xu", help="read extension-unit controls (read-only)")
+    s.add_argument("--unit", type=int)
+    s.add_argument("--selector", type=lambda v: int(v, 0), action="append")
+    s.add_argument("--probe", action="store_true",
+                   help="also GET_INFO/GET_LEN controls the descriptor does not "
+                        "advertise (never SET)")
+    s.add_argument("--usbfs", action="store_true",
+                   help="use raw usbfs instead of UVCIOC_CTRL_QUERY")
+    s.set_defaults(func=cmd_xu)
+
+    s = sub.add_parser("ir", help="get/set the IR (face authentication) mode")
+    s.add_argument("action", choices=["status", "on", "off", "default"])
+    s.add_argument("--usbfs", action="store_true")
+    s.set_defaults(func=cmd_ir)
+
+    s = sub.add_parser("meta", help="get/set the MS-XU frame-metadata control")
+    s.add_argument("action", choices=["status", "on", "off"])
+    s.add_argument("--usbfs", action="store_true")
+    s.set_defaults(func=cmd_meta)
+
+    s = sub.add_parser("v4l2test",
+                       help="prove the kernel face-authentication control works")
+    s.add_argument("--frames", type=int, default=15)
+    s.set_defaults(func=cmd_v4l2test)
+
+    s = sub.add_parser("doctor", help="check dependencies and device access")
+    s.add_argument("--strict", action="store_true",
+                   help="treat optional capture tools as required")
+    s.set_defaults(func=cmd_doctor)
+
+    s = sub.add_parser("mic", help="record from the camera mic and report level")
+    s.add_argument("--seconds", type=int, default=3)
+    s.set_defaults(func=cmd_mic)
+
+    s = sub.add_parser("capture", help="capture IR frames (and optionally RGB)")
+    s.add_argument("--frames", type=int, default=20)
+    s.add_argument("--combined", action="store_true", help="also stream RGB")
+    s.set_defaults(func=cmd_capture)
+
+    s = sub.add_parser("selftest", help="end-to-end emitter proof, with restore")
+    s.add_argument("--frames", type=int, default=15)
+    s.set_defaults(func=cmd_test)
+
+    args = p.parse_args(argv)
+    try:
+        return args.func(args)
+    except Error as exc:
+        print("hellocamctl: %s" % exc, file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())
