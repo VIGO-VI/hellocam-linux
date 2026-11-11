@@ -56,6 +56,7 @@ docs/SETUP-irlume.md            face unlock as actually set up, with scores
 docs/ROADMAP.md                 userspace -> kernel -> upstream plan
 packaging/                      udev rule (optional) and the installer
 kernel/                         out-of-tree uvcvideo proof of concept
+kernel/submission/              format-patch series with commit messages
 ```
 
 ## Licence

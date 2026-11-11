@@ -1,0 +1,75 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Your Name <you@example.com>
+Date: Wed, 11 Nov 2026 00:33:53 -0600
+Subject: [PATCH] media: uvcvideo: ignore Region of Interest on the NexiGo
+ N930W RGB terminal
+
+The NexiGo N930W / HelloCam Pro (3443:930d) advertises the UVC 1.5
+Region of Interest control on both of its camera terminals.  On the RGB
+terminal (video control interface 0) GET_CUR for that control is answered
+with -EIO, so listing controls on the node reports an error and the driver
+permanently disables the associated auto sub-control.  The IR terminal
+(interface 2) implements the control and answers SET_CUR and GET_CUR
+correctly, so it must not be removed for the whole device.
+
+A blacklist entry could only target a USB device until now, so add an
+optional interface number to the table: -1 keeps the existing entries
+applying to the whole device, and 0 restricts this one to the RGB video
+control interface.
+
+Measured on 3443:930d (bcdDevice 0.06) with the change applied:
+/dev/video0 keeps its 19 controls and loses the "error 5 ... Region of
+Interest Rectangle" line and the "permanently disabling control 981ae2"
+message, while /dev/video2 keeps both ROI controls and their value.
+
+Signed-off-by: <PENDING: your name <you@example.com>>
+---
+ drivers/media/usb/uvc/uvc_ctrl.c | 23 +++++++++++++++++++----
+ 1 file changed, 19 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/media/usb/uvc/uvc_ctrl.c b/drivers/media/usb/uvc/uvc_ctrl.c
+index 3ca108b..c10c8d0 100644
+--- a/drivers/media/usb/uvc/uvc_ctrl.c
++++ b/drivers/media/usb/uvc/uvc_ctrl.c
+@@ -3415,15 +3415,27 @@ static void uvc_ctrl_prune_entity(struct uvc_device *dev,
+ 	struct uvc_ctrl_blacklist {
+ 		struct usb_device_id id;
+ 		u8 index;
++		/* Restrict the entry to one interface, or -1 for every one. */
++		int ifnum;
+ 	};
+ 
+ 	static const struct uvc_ctrl_blacklist processing_blacklist[] = {
+-		{ { USB_DEVICE(0x13d3, 0x509b) }, 9 }, /* Gain */
+-		{ { USB_DEVICE(0x1c4f, 0x3000) }, 6 }, /* WB Temperature */
+-		{ { USB_DEVICE(0x5986, 0x0241) }, 2 }, /* Hue */
++		{ { USB_DEVICE(0x13d3, 0x509b) }, 9, -1 }, /* Gain */
++		{ { USB_DEVICE(0x1c4f, 0x3000) }, 6, -1 }, /* WB Temperature */
++		{ { USB_DEVICE(0x5986, 0x0241) }, 2, -1 }, /* Hue */
+ 	};
+ 	static const struct uvc_ctrl_blacklist camera_blacklist[] = {
+-		{ { USB_DEVICE(0x06f8, 0x3005) }, 9 }, /* Zoom, Absolute */
++		{ { USB_DEVICE(0x06f8, 0x3005) }, 9, -1 }, /* Zoom, Absolute */
++		/*
++		 * NexiGo N930W / HelloCam Pro: the RGB camera terminal advertises
++		 * Region of Interest but answers GET_CUR on it with -EIO, so
++		 * listing controls on the RGB node reports an error and the driver
++		 * permanently disables the auto sub-control.  The IR terminal of
++		 * the same device implements the control (SET_CUR and GET_CUR both
++		 * work), so scope this to the RGB video control interface instead
++		 * of hiding a working control as well.
++		 */
++		{ { USB_DEVICE(0x3443, 0x930d) }, 21, 0 },
+ 	};
+ 
+ 	const struct uvc_ctrl_blacklist *blacklist;
+@@ -3455,6 +3467,9 @@ static void uvc_ctrl_prune_entity(struct uvc_device *dev,
+ 		if (!usb_match_one_id(dev->intf, &blacklist[i].id))
+ 			continue;
+ 
++		if (blacklist[i].ifnum >= 0 && blacklist[i].ifnum != dev->intfnum)
++			continue;
++
+ 		if (blacklist[i].index >= 8 * size ||
+ 		    !uvc_test_bit(controls, blacklist[i].index))
+ 			continue;
