@@ -25,7 +25,8 @@ proposed, and every upstream step needs explicit approval.
       (`UVCM` on `/dev/video3`); still to do: decode the payload so the
       illuminator can be proven per frame instead of by brightness
 * [x] read-only probe of the vendor XU selector map (never a blind write)
-* [x] mic: resolved — the monitor's USB hub, not the driver (`docs/FINDINGS.md` 3.1a)
+* [x] mic: resolved — a stuck ADC that a physical replug clears; the port was
+      a red herring (`docs/FINDINGS.md` 3.1a)
 * [x] no privileges needed: `UVCIOC_CTRL_QUERY` on the video node replaces usbfs
 
 Acceptance: `hellocamctl selftest` prints all checks PASS on a cold boot and

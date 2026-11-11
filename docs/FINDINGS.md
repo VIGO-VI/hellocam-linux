@@ -120,30 +120,35 @@ What has been ruled out:
 So the device delivers full, correctly paced 48 kHz packets containing digital
 silence — but **only when it is plugged into the monitor's USB hub**.
 
-### 3.1a Resolved: the monitor's hub was the cause
+### 3.1a Resolved: a stuck ADC, not the port
 
-| port | sysfs path | mic |
+The first version of this file blamed the monitor's USB hub. That was wrong, and
+the camera owner's replug proved it. The real variable is a **physical unplug**:
+
+| step | port | mic |
 |---|---|---|
-| monitor's RTS5411 hub | `1-2.1` (`usb-0000:02:00.0-2.1`) | `peak 0`, every test above |
-| rear PC port | `1-3` (`usb-0000:02:00.0-3`) | `peak 5093`, `15656`, `14759` on repeated 2-3 s recordings |
+| as enumerated at boot | monitor hub (`1-2.1`) | `peak 0`, many recordings |
+| after `USBDEVFS_RESET` (cold re-enumeration) | monitor hub | `peak 0` |
+| after a physical unplug and replug | root port (`1-3`) | `peak 5093`, audio |
+| after another physical unplug and replug | monitor hub (`1-2.1`) | `peak 1356`, audio |
 
-The cold `USBDEVFS_RESET` on the hub path is the control: a full re-enumeration
-with the quirk re-applied did *not* fix it, so this is not stale driver state —
-it is the hub itself. The video side was fine on the hub (1080p60, IR, the
-shutter all worked), so it is specific to the audio function: either power
-delivery to the ADC or the hub's translation of the isochronous audio stream.
-`Momentary freq = 48000 Hz`, correct 192-byte packets and an unmuted, 0 dB
-mixer on both paths.
+So the hub is fine, and so is the driver: `USBDEVFS_RESET` resets the device's
+USB state but does not remove bus power, which is why it did not clear the
+condition. A replug does. Something in the audio block latches into a state only
+a VBUS cycle clears; what triggers it is still unknown, because it was seen once
+and is not reproducible on demand.
 
-Practical advice for other users: **do not put this camera behind a monitor
-hub if you want the microphone.** It is worth a line in the docs of whatever
-ships the quirk.
+The ALSA side was verified correct throughout and is not implicated: the
+`QUIRK_FLAG_GET_SAMPLE_RATE | QUIRK_FLAG_MIC_RES_16` entry is applied on every
+probe, `Momentary freq` reports 48000 Hz with 192-byte packets, and the mixer is
+unmuted at 0 dB.
 
-The quirk author's unit also works with the same `3443:930d` id, so the code
-was never at fault.
-
-Use `hellocamctl mic` to reproduce in one command; it prints the peak amplitude
-and a verdict.
+Practical advice for other users, which is all that can be given honestly:
+**if the microphone streams digital silence, replug the camera**; no software
+reset, port change or mixer change has been observed to help. A real fix would
+need either per-port power switching (`uhubctl`-style, which this hub does not
+appear to expose) or knowledge of what puts the ADC in that state — neither is
+available today.
 
 ### 3.2 The Microsoft XU is invisible to V4L2
 

@@ -19,7 +19,7 @@ userspace first, then in the kernel, then upstream it out of the box.
 | IR illuminator / face-auth mode | **works** | userspace via `UVCIOC_CTRL_QUERY`, or natively as a V4L2 menu control with `kernel/` (proof of concept); D1 strobing proven optically |
 | Per-frame metadata (illumination, stats) | works (kernel 7.x) | MS-XU selector `0x09` is enabled at probe by `uvc_meta_detect_msxu()`; `/dev/video3` offers `UVCM` and streams ~4 KB/frame |
 | Vendor XU `{28f03370-6311-4a2e-ba2c-6890eb334016}` | **not exposed** | 7 controls on the RGB chain — the NexiGo Windows software lives here |
-| Microphone | works | **silent behind the monitor's USB hub**; works on a root port (`hellocamctl mic` to check) |
+| Microphone | works | a stuck-ADC state seen once streamed pure silence until a **physical replug**; port-independent (`hellocamctl mic` checks it) |
 | Region-of-interest controls | exposed but broken | device answers `-EIO`; uvcvideo disables them, see dmesg |
 
 ## Usage
