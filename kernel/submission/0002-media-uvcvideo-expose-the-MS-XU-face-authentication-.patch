@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Your Name <you@example.com>
-Date: Wed, 11 Nov 2026 00:33:53 -0600
+Date: Wed, 11 Nov 2026 01:06:13 -0600
 Subject: [PATCH] media: uvcvideo: expose the MS-XU face authentication control
 
 Microsoft's UVC 1.5 extensions define a Face Authentication control
@@ -15,14 +15,15 @@ Expose it as a menu over the entry for the camera's single IR streaming
 interface, with a read-modify-write of the flags byte so the interface
 entry is preserved.
 
-The control id is private (V4L2_CID_USER_BASE + 0x1000) because this is an
-RFC: the payload is a per-interface array rather than a scalar, so the
-public API is the open question, not the plumbing.
+The control id is private (V4L2_CID_USER_BASE + 0x1000) because this is
+an RFC: the payload is a per-interface array rather than a scalar, so the
+public API is the open question, not the plumbing.  v4l2-compliance
+reports "expected N private controls, got 0" on the IR node with this
+control present, which has to be resolved before it is proposed.
 
 Measured on a NexiGo N930W (3443:930d): the control appears as a
 three-entry menu, writing D1 gives per-frame IR means alternating 0.9 and
-222.7 while D0 stays flat, and the previous value is restored.  irlume
-0.15.0 derives the same payload from GET_MAX/GET_DEF independently.
+222.7 while D0 stays flat, and the previous value is restored.
 
 Signed-off-by: <PENDING: your name <you@example.com>>
 ---

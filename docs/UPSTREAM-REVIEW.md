@@ -124,7 +124,50 @@ uvcvideo 1-2.1:1.0: UVC non compliance: permanently disabling control 981ae2 (Re
    `__uvc_ctrl_load_cur()` → `GET_CUR`, which fails the same way; that is the
    `error 5` v4l2-ctl prints.
 
-### 2.4 The device's own answer
+### 2.4 At the USB level
+
+Captured with `usbmon` on bus 1, no quirk loaded, `uvcvideo` tracing on. Same
+device, same unit, same selector, same length — only the interface differs:
+
+```console
+RGB terminal, interface 0:
+  submit  : a1 87 1400 0100 000a   (GET_DEF, selector 0x14, unit 1, iface 0, 10 bytes)
+  complete: -32 0                  (-EPIPE = STALL, no data)   ×4 retries
+
+IR terminal, interface 2:
+  submit  : a1 81 1400 0102 000a   (GET_CUR, selector 0x14, unit 1, iface 2, 10 bytes)
+  complete: 0 10 = 00000000 00000000 0100
+```
+
+The IR response is a valid `struct uvc_rect` (all zeros) plus `bmAutoControls =
+0x0001`. So the request the driver sends is well formed, the device accepts it
+on one of its two terminals and stalls it on the other.
+
+### 2.5 v4l2-compliance
+
+`v4l2-compliance` (v4l-utils 1.32.0) on the two capture nodes, distribution
+driver versus the same driver with only this patch applied:
+
+| node | distribution driver | with the patch |
+|---|---|---|
+| RGB `/dev/video0` | **46/49, 3 failures, 1 warning** | **49/49, 0 failures** |
+| IR `/dev/video2` | 48/49, 1 failure | 48/49, 1 failure (identical) |
+
+The three RGB failures are all this control:
+
+```
+fail: v4l2-test-controls.cpp(94): maximum must be non-zero for a bitmask control
+fail: v4l2-test-controls.cpp(201): invalid control 00981ae2
+fail: v4l2-test-controls.cpp(939): try_ext_ctrls returned an error (5)
+```
+
+That is the strongest form of the justification: the patch is not cosmetic, it
+turns a node that fails the standard compliance tool into one that passes.
+
+The IR node's single failure (`expected 1 private controls, got 0`) is present
+identically with and without the patch, so it is pre-existing and unrelated.
+
+### 2.6 The device's own answer
 
 With driver tracing on and a build *without* this quirk:
 
@@ -204,6 +247,8 @@ Everything below is reproducible from the public repository
 | descriptor, bit 21 on both terminals | `lsusb -v`, plus a 1071-byte descriptor walk |
 | RGB fails, IR works | `v4l2-ctl` before/after the patch, on both nodes |
 | device answers error 7 | tracing build without the quirk, `Control error 7` in dmesg |
+| the request is well formed | `usbmon`: `a1 87 1400 0100 000a` stalled with `-32`; `a1 81 1400 0102 000a` on interface 2 returns 10 valid bytes |
+| the patch fixes a compliance failure | `v4l2-compliance`: RGB 46/49 → 49/49; IR unchanged 48/49 |
 | patch behaviour | with the quirk: RGB keeps 19 controls, loses only the error line; IR keeps both ROI controls and its value; no `non compliance` line |
 | patch applies and builds | `pristine v7.3 + 0001 + 0002` reconstructs the tested tree byte-for-byte; `audit.sh --build` clones HEAD, fetches, patches, builds |
 | nothing else changes | the RGB control set is identical before and after (19 controls), and other devices cannot match `USB_DEVICE(0x3443, 0x930d)` |
@@ -223,6 +268,10 @@ Say these before a reviewer finds them:
    (sentinel `-1`) rather than measurement.
 5. **The IR terminal's rectangle control** was not exercised either; only the
    auto bitmask.
+6. **A pre-existing `v4l2-compliance` failure on the IR node** (`expected 1
+   private controls, got 0`) is untouched by this patch. It may itself be a
+   uvcvideo bug worth reporting separately; it is not a reason to change this
+   submission.
 
 ## 7. Anticipated objections
 

@@ -1,26 +1,32 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Your Name <you@example.com>
-Date: Wed, 11 Nov 2026 00:33:53 -0600
+Date: Wed, 11 Nov 2026 01:06:12 -0600
 Subject: [PATCH] media: uvcvideo: ignore Region of Interest on the NexiGo
  N930W RGB terminal
 
 The NexiGo N930W / HelloCam Pro (3443:930d) advertises the UVC 1.5
 Region of Interest control on both of its camera terminals.  On the RGB
-terminal (video control interface 0) GET_CUR for that control is answered
-with -EIO, so listing controls on the node reports an error and the driver
-permanently disables the associated auto sub-control.  The IR terminal
-(interface 2) implements the control and answers SET_CUR and GET_CUR
-correctly, so it must not be removed for the whole device.
+terminal (video control interface 0) the device stalls every request for
+that control with UVC error code 7 (Invalid Request), so listing controls
+on that node fails and the driver permanently disables the associated
+auto sub-control.  The IR terminal (interface 2) implements the same
+control: the identical GET_CUR returns ten valid bytes.
+
+v4l2-compliance on the RGB node with the distribution driver reports
+46/49 with three failures, all of them this control ("maximum must be
+non-zero for a bitmask control", "invalid control 00981ae2", and a
+TRY_EXT_CTRLS error).  With this patch it reports 49/49.  The IR node is
+unchanged at 48/49; its single failure is a separate, pre-existing one.
 
 A blacklist entry could only target a USB device until now, so add an
 optional interface number to the table: -1 keeps the existing entries
 applying to the whole device, and 0 restricts this one to the RGB video
-control interface.
+control interface.  Removing the control for the whole device would also
+delete the IR control that works.
 
-Measured on 3443:930d (bcdDevice 0.06) with the change applied:
-/dev/video0 keeps its 19 controls and loses the "error 5 ... Region of
-Interest Rectangle" line and the "permanently disabling control 981ae2"
-message, while /dev/video2 keeps both ROI controls and their value.
+Measured on 3443:930d (bcdDevice 0.06): the RGB node keeps its 19
+controls and loses the error, the IR node keeps both ROI controls and
+their value.
 
 Signed-off-by: <PENDING: your name <you@example.com>>
 ---

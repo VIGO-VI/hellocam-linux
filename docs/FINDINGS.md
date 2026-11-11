@@ -277,8 +277,14 @@ Measured with the quirk applied (out-of-tree build, `srcversion DFEE32B4…`):
 | `/dev/video0` (RGB, interface 0) | 19 controls **plus** `error 5 getting ext_ctrl Region of Interest Rectangle`, and `UVC non compliance: permanently disabling control 981ae2` | 19 controls, no error, no `dmesg` line |
 | `/dev/video2` (IR, interface 2) | ROI rectangle + auto controls | unchanged, both present, value preserved |
 
-That is the whole case for the interface-scoped blacklist: the wart disappears
-from the node people actually use, and the working IR control is not collateral.
+`v4l2-compliance` (v4l-utils 1.32.0) makes the case sharper: the RGB node
+scores **46/49 with three failures** on the distro driver — all of them this
+control — and **49/49 with the quirk**. The IR node is 48/49 either way, so its
+single failure is pre-existing and unrelated.
+
+That is the whole case for the interface-scoped blacklist: the node people
+actually use goes from non-compliant to compliant, and the working IR control is
+not collateral.
 
 ### 3.4 Vendor XU (NexiGo Windows software features)
 
