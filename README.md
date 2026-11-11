@@ -52,9 +52,10 @@ bytes at an unknown vendor unit has bricked cameras before; there is no
 ```
 hellocamctl                     the userspace proof of concept
 docs/FINDINGS.md                hardware/software audit with evidence
+docs/SETUP-irlume.md            face unlock as actually set up, with scores
 docs/ROADMAP.md                 userspace -> kernel -> upstream plan
-packaging/99-hellocamctl.rules  udev rule for usbfs access
-packaging/install.sh            install/remove it
+packaging/                      udev rule (optional) and the installer
+kernel/                         out-of-tree uvcvideo proof of concept
 ```
 
 ## Licence
