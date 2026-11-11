@@ -7,7 +7,7 @@ Out-of-tree `uvcvideo` with two changes this camera needs. Both are in
 | patch | what |
 |---|---|
 | `0001-uvcvideo-expose-MS-XU-face-authentication.patch` | exposes the Microsoft XU Face Authentication control as a V4L2 menu, so any application can switch the IR illuminator (general purpose / alternating / continuous) |
-| `0002-uvcvideo-drop-broken-ROI-controls-for-3443-930d.patch` | drops Region-of-Interest for `3443:930d`, whose firmware answers every ROI request with `-EIO` |
+| `0002-uvcvideo-scope-ROI-quirk-to-the-RGB-interface.patch` | drops Region-of-Interest on the RGB camera terminal of `3443:930d`, which answers `GET_CUR` with `-EIO`, while leaving the IR terminal's working ROI control alone (adds an optional interface field to the blacklist table) |
 
 ## Build and load
 

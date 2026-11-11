@@ -263,13 +263,22 @@ uvcvideo 1-2.1:1.0: UVC non compliance: permanently disabling control 981ae2
   (Region of Interest Auto Ctrls), due to error -5
 ```
 
-The camera terminal advertises ROI (bit 21, which is where UVC 1.5 puts it) but
-answers `-EIO` — the UVC error code path maps to "invalid control/request", so
-the firmware refuses a control it advertises rather than objecting to the state
-or arguments. `v4l2-ctl --list-ctrls` on `/dev/video0` prints `error 5 getting
-ext_ctrl Region of Interest Rectangle`, and the driver permanently disables the
-auto sub-control. The driver is correct here (see the note in section 5), so the
-fix is a per-device quirk, not a driver change.
+The **RGB** camera terminal advertises ROI (bit 21, which is where UVC 1.5 puts
+it) but answers `GET_CUR` with `-EIO`; the **IR** terminal's ROI control works —
+`-c region_of_interest_auto_ctrls=0x1` followed by `-C` reads back 1. So this is
+not a device-wide failure and not a driver bug (section 5): the driver is right,
+the firmware's RGB terminal refuses a control it advertises, and any fix has to
+be scoped to that interface.
+
+Measured with the quirk applied (out-of-tree build, `srcversion DFEE32B4…`):
+
+| node | before | after |
+|---|---|---|
+| `/dev/video0` (RGB, interface 0) | 19 controls **plus** `error 5 getting ext_ctrl Region of Interest Rectangle`, and `UVC non compliance: permanently disabling control 981ae2` | 19 controls, no error, no `dmesg` line |
+| `/dev/video2` (IR, interface 2) | ROI rectangle + auto controls | unchanged, both present, value preserved |
+
+That is the whole case for the interface-scoped blacklist: the wart disappears
+from the node people actually use, and the working IR control is not collateral.
 
 ### 3.4 Vendor XU (NexiGo Windows software features)
 
