@@ -34,6 +34,9 @@ done
 bashism=""
 for f in $(git ls-files '*.sh'); do
 	if ! sh -n "$f"; then bad "sh -n" "$f"; fi
+	# This script carries the pattern it searches for, so it would match
+	# itself; it is the one file the portability scan has to skip.
+	[ "$f" = "audit.sh" ] && continue
 	if head -1 "$f" | grep -q '/bin/sh$' &&
 	   grep -qE '\[\[|function [a-z]|local [a-z_]+=|declare -|<<<' "$f"; then
 		bashism="$bashism $f"
