@@ -12,9 +12,10 @@ that evidence, from that hardware.
 
 ## Measurements
 
-Host: CachyOS, Linux 7.3.3, camera `3443:930d`, `bcdDevice 0.06`, behind a root
-port. Nothing below is inferred from the `c803` sibling; the payload was applied
-to this unit and read back.
+Host: CachyOS, Linux 7.3.3, camera `3443:930d`, `bcdDevice 0.06`. Nothing below is
+inferred from the `c803` sibling; the payload was applied to this unit and read
+back. The full `ir-setup` transcript you asked for is in the thread, and its
+derivation from `GET_MAX`/`GET_DEF` lands on the same control and bytes.
 
 | what | result |
 |---|---|
@@ -46,9 +47,11 @@ cargo test -p irlume-camera known_control     # 3 passed
 python3 scripts/generate-hardware-matrix.py --check
 ```
 
-I did not add a `fleet-evidence.json` host row: that file's policy asks for
-evidence captured with a named irlume version, and this host has no irlume
-installed. The emitter-table row is generated from the code, as intended.
+`irlume` is now installed here (0.15.0 from the AUR) and `sudo irlume ir-setup`
+ran against this unit; that transcript is in the thread. I still did not add a
+`fleet-evidence.json` host row myself, because that file's shape is yours and
+the evidence it wants is in the comment rather than in my hands as a fixture.
+The emitter-table row is generated from the code, as intended.
 
 ## AI assistance
 

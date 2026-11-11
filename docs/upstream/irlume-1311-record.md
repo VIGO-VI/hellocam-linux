@@ -27,7 +27,7 @@ $ hellocamctl ir status        # after: irlume left the emitter on, as designed
   GET_CUR: 010302000000000000  iface 3: D1:alternating-illumination
 ```
 
-Worth noting: `ir-setup`'s derived value is byte-for-byte the one my tool wrote by hand (`4:6:1,3,2,0,0,0,0,0,0`, interface `0x03`, D1), so the two independent paths agree. It also correctly refused unit 3 — that unit advertises nothing on the IR chain, and on the RGB chain the seven selectors it does advertise are identification/version strings, which is why nothing here writes to it.
+Worth noting: `ir-setup`'s derived value is byte-for-byte the one my tool wrote by hand (`4:6:1,3,2,0,0,0,0,0,0`, interface `0x03`, D1), so the two independent paths agree. It also correctly refused unit 3 — that unit advertises nothing on the IR chain, and on the RGB chain the seven selectors it does advertise read back as identification and version blobs (a UTF-16 `Cam Pro Audio` name, short numeric values). None of those is documented, which is why nothing here writes to it.
 
 The camera is left in D1, which is what "saved" means; if I want it idle again, `hellocamctl ir off` puts it back to D0.
 

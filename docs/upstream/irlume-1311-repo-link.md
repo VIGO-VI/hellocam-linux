@@ -3,10 +3,10 @@ Published the tool and the rest of the work, since it makes the numbers above ch
 What is in it, in case any of it is useful for the record:
 
 - `hellocamctl` — the tool that produced the measurements (single file, Python standard library only, no root, no udev rule). `hellocamctl doctor`, `xu`, `ir status|on|off`, `capture`, `mic`, `selftest` (11 checks, writes D1, captures, writes D0, captures, restores), `v4l2test`.
-- `docs/FINDINGS.md` — the descriptor model, the three-way split between "works out of the box / works only with help / firmware does not implement it", and the two things that cost the most time: the silent microphone behind a monitor hub, and this camera not answering UVC class requests during probe.
+- `docs/FINDINGS.md` — the descriptor model, and the three-way split between "works out of the box / works only with help / firmware does not implement it".
 - `kernel/` — an out-of-tree `uvcvideo` proof of concept in two patches (the face-authentication menu control, and a quirk dropping this camera's broken Region-of-Interest bits). `kernel/fetch-sources.sh` pulls the v7.3 sources rather than vendoring them; `pristine + patches` reproduces the tree that built. Those patches have not been sent anywhere.
 
-The `ir-setup` transcript from your list is still the open item on my side; everything else is unchanged.
+*Correction, same day:* this comment originally described a "silent microphone behind a monitor hub" as a finding. That was wrong — the camera went back on the same hub and records audio after a physical replug. What differs between the silent and working states is a bus-power cycle, not the port, and `USBDEVFS_RESET` does not cut VBUS. The repo's `docs/FINDINGS.md` now says that.
 
 Two small things in the non-irlume part that may interest you as a uvcvideo maintainer-adjacent finding, since they are generic rather than NexiGo-specific:
 
