@@ -1,0 +1,18 @@
+<!-- SPDX-License-Identifier: GPL-2.0-or-later -->
+Answering the question first: the measurements in the description did **not** come from the repository's examples. They came from a small standalone tool I wrote for this camera (Python 3, standard library only, ~900 lines, GPL-2.0-or-later), which talks to the control through `UVCIOC_CTRL_QUERY` on the video node and does the frame statistics itself. No irlume code was built or run, so there is no `msxu_probe`/`xu_set`/`burst_dump` output or commit to attach — and I will not dress up my run as one of those.
+
+Here is the one thing from your list that I can hand over right now, produced with exactly your command, from the unit in question (`bcdDevice 0006`, the same camera the payload was tested on):
+
+```console
+/sys/bus/usb/devices/1-3 bcdDevice 0006
+EgEBAu8CAUBDNA2TBgACAQMBCQIdBAYBAID6CAsAAg4DAAUJBAAAAQ4BAAUNJAEAAWgAwOHkAAEBCSQDBQEBAAQAGiQGA3Az8CgRYy5KuixokOszQBYIAQIBvwAbJAYE3JU/DzImTkySyaBHgvQ7yBABAwIAAAASJAIBAQIAAAAAAAAAAAMuKiILJAUCAQAAAn8XAAcFgwNAAAYFJQOAAAkEAQAADgIAAA8kAQJ7AYEABQAAAAEAAAskBgEFAAEAAAAAIiQHAQCABzgEAIBTOwAAp3ZNSj8ACosCAAIKiwIAFRYFACIkBwIAAAXQAgAAXhoAALw0TSIcAAqLAgACCosCABUWBQAiJAcDAMADHAIA4NQOAMCpHU3UDwAKiwIAAgqLAgAVFgUAIiQHBABWA+ABAFi6CwCwdBfNhAwACosCAAIKiwIAFRYFACIkBwUAgALgAQAAyggAAJQRTWIJAAqLAgACCosCABUWBQAbJAQCBVlVWTIAABAAgAAAqgA4m3EQAQAAAAAeJAUBAIAHOAQAQOMJAEDjCQBIPwCAhB4AAYCEHgAeJAUCAAAF0AIAAMoIAADKCAAgHABAQg8AAUBCDwAeJAUDAMADHAIAQOMJAEDjCQDSDwAgoQcAASChBwAeJAUEAFYD4AEAkNEHAJDRB4CCDAAgoQcAASChBwAeJAUFAIAC4AEAAMoIAADKCABgCQAVFgUAARUWBQAGJA0BAQQJBAEBAQ4CAAAHBYEFgAABCQQBAgEOAgAABwWBBQABAQkEAQMBDgIAAAcFgQUgAwEJBAEEAQ4CAAAHBYEFIAsBCQQBBQEOAgAABwWBBbATAQkEAQYBDgIAAAcFgQUAFAEICwICDgMABgkEAgABDgEABg0kAQABaADA4eQAAQMJJAMFAQEABAAaJAYDcDPwKBFjLkq6LGiQ6zNAFggBAgEAABskBgTclT8PMiZOTJLJoEeC9DvIEAEDAiABABIkAgEBAgAAAAAAAAAAAwAAIAskBQIBAAACAAAABwWGA0AABgUlA4AACQQDAAAOAgAADiQBAU0AggAFAAAAAQAbJAQBATIAAAACABAAgAAAqgA4m3EIAQAAAAAeJAUBAIACaAEAwEsDAMBLAwCEAwAVFgUAARUWBQAGJA0BAQQJBAMBAQ4CAAAHBYIFgAABCQQDAgEOAgAABwWCBQABAQkEAwMBDgIAAAcFggUgAwEJBAMEAQ4CAAAHBYIFgAoBCQQDBQEOAgAABwWCBSATAQkEAwYBDgIAAAcFggUAFAEICwQCAQAABAkEBAAAAQEABAkkAQABKwABBQwkAgEBAgACAAAAAA0kBgIBAgEAAgACAAAJJAMDAQEAAgAJBAUAAAECAAQJBAUBAQECAAQHJAEDAQEACyQCAQICEAGAuwAJBYQFwAAEAAAHJQEBAAAA
+```
+
+`sudo irlume ir-setup --dry-run` and `sudo irlume ir-setup` are the part I cannot do yet: `ir-setup` goes through `irlumed`, so it needs the package installed on this machine, and installing a daemon that can unlock a login session is the owner's call, not something I should do unasked while they are away. I have the transcript steps staged and will paste all four outputs together, in your order, as soon as that install has happened — I will not split it into a partial record.
+
+Two notes so the wait costs you nothing:
+
+- I replugged the camera before collecting the descriptor above (USB re-enumeration, so no control state survives), and it is currently back in D0 (`GET_CUR 01 03 01 …`), so a later `ir-setup` will not report "already set".
+- Your reading of `GET_MAX 01 03 03` / `GET_DEF 01 03 01` matches what the device returns here, including that D2 is not offered, so if `ir-setup` derives D1 from those two values it should land on `01 03 02 00 00 00 00 00 00`.
+
+Nothing else in the PR needs a decision from me: go ahead with the rebase, the fixture, the fleet row, the CHANGELOG/PLATFORMS/LIMITATIONS edits and the reworded comments from your side. If you would rather have the tool as a reference for the record, say so and I will publish it; otherwise the descriptor plus the eventual `ir-setup` transcript are the reproducible artefacts.
