@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# NexiGo HelloCam (NexiGo N930W / HelloCam Pro, USB 3443:930d) and the
+# 3443:c803 sibling.
+#
+# uvcvideo exposes the standard UVC units but ignores extension units whose
+# GUID it does not know.  On this camera the Microsoft extension unit
+# (MS_CAMERA_CONTROL_XU, {0f3f95dc-2632-4c4e-92c9-a04782f43bc8}) carries the
+# IR illuminator / face-authentication mode and the frame-metadata switch, so
+# userspace needs write access to the usbfs node to reach them.
+#
+# TAG+="uaccess" grants that to the user logged in on the seat, the same way
+# PipeWire gets the video nodes; nothing is granted to other users, and the
+# access disappears when the device is unplugged.
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="3443", ATTR{idProduct}=="930d", TAG+="uaccess"
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="3443", ATTR{idProduct}=="c803", TAG+="uaccess"

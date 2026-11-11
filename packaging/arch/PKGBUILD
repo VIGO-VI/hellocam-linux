@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Example PKGBUILD.  The udev rule is optional and only needed for --usbfs,
+# so it is shipped but not relied on by the default path.
+pkgname=hellocamctl
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Control the NexiGo HelloCam (3443:930d) IR illuminator and friends"
+arch=('any')
+url="https://github.com/VIGO-VI/hellocam-linux"
+license=('GPL-2.0-or-later')
+depends=('python')
+optdepends=('v4l-utils: hellocamctl capture / selftest'
+            'alsa-utils: hellocamctl mic')
+source=("$pkgname-$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+	install -Dm755 hellocamctl "$pkgdir/usr/bin/hellocamctl"
+	install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+	install -Dm644 packaging/72-hellocamctl.rules \
+		"$pkgdir/usr/lib/udev/rules.d/72-hellocamctl.rules"
+	install -Dm644 docs/FINDINGS.md "$pkgdir/usr/share/doc/$pkgname/FINDINGS.md"
+}
