@@ -4,6 +4,9 @@ kernel/uvc/*.c
 kernel/uvc/*.h
 kernel/uvc/Makefile.intree
 
+# checkpatch scratch (--no-tree writes its cache into the tree)
+kernel/.checkpatch-*
+
 # out-of-tree kernel build products
 kernel/uvc/*.o
 kernel/uvc/.*.cmd

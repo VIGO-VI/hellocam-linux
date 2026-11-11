@@ -73,10 +73,12 @@ camera is left in the mode it was found in (`selftest` restores `GET_CUR`).
 ## Licensing
 
 GPL-2.0-or-later, matching the kernel driver this is meant to feed
-(`drivers/media/usb/uvc`). Every source and documentation file carries an SPDX
-tag; the full text is in `LICENSE`. The files in `kernel/patches/` carry no tag
-of their own because a patch becomes part of the GPL-2.0 kernel file it applies
-to, and `kernel/README.md` says so.
+(`drivers/media/usb/uvc`). Every source and documentation file we write carries
+an SPDX tag. Three deliberate exceptions: `LICENSE` is the verbatim GPL-2.0 text
+and must not be edited; `docs/upstream/*.md` mirror comments posted to GitHub
+verbatim and are untagged so the tag cannot leak into a public comment (it did
+once); and the patch files under `kernel/` are generated, becoming part of the
+GPL-2.0 kernel file they apply to.
 
 ## Kernel side (stage 2)
 

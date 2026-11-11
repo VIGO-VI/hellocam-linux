@@ -61,6 +61,12 @@ id, and a decision on the default mode while the IR node streams.
 
 ## Stage 3 — upstream
 
+The kernel series is prepared as `git format-patch` output in
+`kernel/submission/` with commit messages; `checkpatch --strict` reports only
+the placeholder `Signed-off-by`, which the identity decision removes. Only the
+ROI quirk is proposed for submission now; the face-authentication control stays
+an RFC until the public control id is decided.
+
 **Started: irlume PR #1311** (2026-11-10) adds `3443:930d` to irlume's
 `known_control` emitter table with the descriptor / write / read-back / optical /
 restore evidence that table required, and a comment on irlume#449 (the same
@@ -75,8 +81,11 @@ In rough order of "cheap and uncontroversial" to "needs discussion":
    self-contained, uses the existing `uvc_ctrls[]` mapping machinery, and
    follows the in-tree precedent of `uvc_meta_detect_msxu()` which already
    drives another MS-XU selector.
-3. **uvcvideo: quirk to suppress the non-compliant ROI controls** on
-   `3443:930d`.
+3. **uvcvideo: quirk to drop the Region-of-Interest control on this device's
+   RGB terminal**, whose firmware answers `GET_CUR` with `-EIO` while the IR
+   terminal implements it — so the entry is scoped to interface 0. Proven on
+   hardware and packaged in `kernel/submission/`; waiting on the submission
+   identity only.
 4. **ALSA: fix / document the silent microphone** — either a new quirk, or a
    bug report with the vendor XU evidence if the ADC needs enabling.
 5. **Vendor XU** (`28f03370-…`): only if the selector map can be documented

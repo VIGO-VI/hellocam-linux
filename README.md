@@ -53,10 +53,13 @@ bytes at an unknown vendor unit has bricked cameras before; there is no
 hellocamctl                     the userspace proof of concept
 docs/FINDINGS.md                hardware/software audit with evidence
 docs/SETUP-irlume.md            face unlock as actually set up, with scores
+docs/PACKAGING.md               dependencies, install paths, policy
 docs/ROADMAP.md                 userspace -> kernel -> upstream plan
-packaging/                      udev rule (optional) and the installer
-kernel/                         out-of-tree uvcvideo proof of concept
-kernel/submission/              format-patch series with commit messages
+docs/upstream/                  the text posted upstream, verbatim
+packaging/                      installer, optional udev rule, PKGBUILD
+kernel/README.md                what the PoC changes and how to build it
+kernel/patches/                 bare diffs for the local build
+kernel/submission/              format-patch series for the mailing list
 ```
 
 ## Licence
