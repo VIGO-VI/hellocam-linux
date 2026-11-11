@@ -1,0 +1,44 @@
+--- a/drivers/media/usb/uvc/uvc_ctrl.c
++++ b/drivers/media/usb/uvc/uvc_ctrl.c
+@@ -3537,15 +3537,27 @@
+ 	struct uvc_ctrl_blacklist {
+ 		struct usb_device_id id;
+ 		u8 index;
++		/* Restrict the entry to one interface, or -1 for every one. */
++		int ifnum;
+ 	};
+ 
+ 	static const struct uvc_ctrl_blacklist processing_blacklist[] = {
+-		{ { USB_DEVICE(0x13d3, 0x509b) }, 9 }, /* Gain */
+-		{ { USB_DEVICE(0x1c4f, 0x3000) }, 6 }, /* WB Temperature */
+-		{ { USB_DEVICE(0x5986, 0x0241) }, 2 }, /* Hue */
++		{ { USB_DEVICE(0x13d3, 0x509b) }, 9, -1 }, /* Gain */
++		{ { USB_DEVICE(0x1c4f, 0x3000) }, 6, -1 }, /* WB Temperature */
++		{ { USB_DEVICE(0x5986, 0x0241) }, 2, -1 }, /* Hue */
+ 	};
+ 	static const struct uvc_ctrl_blacklist camera_blacklist[] = {
+-		{ { USB_DEVICE(0x06f8, 0x3005) }, 9 }, /* Zoom, Absolute */
++		{ { USB_DEVICE(0x06f8, 0x3005) }, 9, -1 }, /* Zoom, Absolute */
++		/*
++		 * NexiGo N930W / HelloCam Pro: the RGB camera terminal advertises
++		 * Region of Interest but answers GET_CUR on it with -EIO, so
++		 * listing controls on the RGB node reports an error and the driver
++		 * permanently disables the auto sub-control.  The IR terminal of
++		 * the same device implements the control (SET_CUR and GET_CUR both
++		 * work), so scope this to the RGB video control interface instead
++		 * of hiding a working control as well.
++		 */
++		{ { USB_DEVICE(0x3443, 0x930d) }, 21, 0 },
+ 	};
+ 
+ 	const struct uvc_ctrl_blacklist *blacklist;
+@@ -3577,6 +3589,9 @@
+ 		if (!usb_match_one_id(dev->intf, &blacklist[i].id))
+ 			continue;
+ 
++		if (blacklist[i].ifnum >= 0 && blacklist[i].ifnum != dev->intfnum)
++			continue;
++
+ 		if (blacklist[i].index >= 8 * size ||
+ 		    !uvc_test_bit(controls, blacklist[i].index))
+ 			continue;

@@ -263,9 +263,13 @@ uvcvideo 1-2.1:1.0: UVC non compliance: permanently disabling control 981ae2
   (Region of Interest Auto Ctrls), due to error -5
 ```
 
-The camera terminal advertises ROI but answers `-EIO`. `v4l2-ctl --list-ctrls`
-on `/dev/video0` also prints `error 5 getting ext_ctrl Region of Interest
-Rectangle`. Cosmetic, but a clean candidate for a small uvcvideo quirk.
+The camera terminal advertises ROI (bit 21, which is where UVC 1.5 puts it) but
+answers `-EIO` — the UVC error code path maps to "invalid control/request", so
+the firmware refuses a control it advertises rather than objecting to the state
+or arguments. `v4l2-ctl --list-ctrls` on `/dev/video0` prints `error 5 getting
+ext_ctrl Region of Interest Rectangle`, and the driver permanently disables the
+auto sub-control. The driver is correct here (see the note in section 5), so the
+fix is a per-device quirk, not a driver change.
 
 ### 3.4 Vendor XU (NexiGo Windows software features)
 
@@ -321,13 +325,17 @@ Three things learned while building it, all worth carrying upstream:
 * **`GENMASK()` takes bit positions, not a mask value.** `GENMASK(BIT(2), 0)`
   silently produced a five-entry menu and `QUERYMENU` read two names past the
   array.
-* **uvcvideo's Region of Interest entry is internally inconsistent.** This
-  camera advertises ROI at `bmControls` bit 21, and `uvc_ctrls[]` matches that
-  index — but the same entry carries `.selector = UVC_CT_REGION_OF_INTEREST_CONTROL`
-  which is 20, so the driver ends up sending requests for a control number the
-  firmware does not implement (`-EIO`, then "permanently disabling control
-  981ae2"). Either the `.index` or the selector is wrong; it deserves its own
-  bug report rather than being papered over by the blacklist above.
+* **The Camera Terminal's `bmControls` bits are not `selector - 1`.** A first
+  reading of `uvc_ctrls[]` suggested the Region of Interest entry was
+  inconsistent (bit 21, selector `0x14`). It is not: the driver's own table puts
+  Focus Auto at bit 17 for selector 8, Privacy at bit 18 for `0x11`, and ROI at
+  bit 21 for `0x14`, and the merged ROI implementation
+  (`[PATCH v17 16/17] media: uvcvideo: implement UVC v1.5 ROI`, reviewed by
+  Ribalda/de Goede/Cao) carries exactly that pairing. So this camera advertising
+  bit 21 is spec-compliant, the driver does the right thing, and the `-EIO` is
+  the firmware refusing a control it advertised — a device quirk, not a driver
+  bug. Recorded because the wrong conclusion was one plausible-looking table
+  away.
 
 ## 4. Side discovery: the monitor's "headset mic"
 
