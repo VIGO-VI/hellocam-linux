@@ -218,6 +218,15 @@ by eye, not only by the frame statistics.
 `GET_DEF`/`GET_CUR` were `01 03 01 …` (D0) before the test and are D0 again
 after it, so the camera is left exactly as found.
 
+**Independently confirmed by irlume 0.15.0.** `sudo irlume ir-setup`, which
+derives the value from `GET_MAX`/`GET_DEF` and refuses to write to units that
+advertise nothing, produced byte-for-byte the same control and payload —
+`IR emitter enabled: 4:6:1,3,2,0,0,0,0,0,0 … accepted: interface 0x03 set to
+D1 (alternative illumination)` — and its dry run listed unit 3 as
+vendor-defined with no advertised selectors and unit 4 as the Microsoft unit
+advertising `[0x06, 0x09]`. Two independent derivations agreeing is the
+strongest evidence available short of the vendor's own document.
+
 ### 3.2b Vendor XU (`28f03370-…`) — what is actually in it
 
 Read-only dump of the seven advertised selectors, RGB chain, unprivileged:
