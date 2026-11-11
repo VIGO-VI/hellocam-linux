@@ -1,0 +1,140 @@
+--- a/drivers/media/usb/uvc/uvc_ctrl.c
++++ b/drivers/media/usb/uvc/uvc_ctrl.c
+@@ -36,8 +36,115 @@
+  * Controls
+  */
+ 
++/*
++ * Microsoft extensions to UVC 1.5: Face Authentication (MS-XU selector 0x06).
++ *
++ * The payload is one count byte followed by eight-byte entries, one per
++ * streaming interface: { bInterfaceNumber, bmControlFlags, 6 reserved }.
++ * bmControlFlags is D0 = general purpose, D1 = alternating frame illumination,
++ * D2 = continuous illumination; Windows Hello negotiates D1.
++ *
++ * This is exposed as a menu over the flags byte of the single entry the camera
++ * reports.  The payload size is fixed at one entry: probing GET_LEN here is not
++ * possible, because the camera does not answer class requests yet when the
++ * control is instantiated during probe (it returns -EAGAIN).  A camera with a
++ * different payload instead fails cleanly at the first GET_CUR, which asks for
++ * fewer bytes than the device wants to send.
++ */
++#define UVC_FACE_AUTH_ENTRY_SIZE	8
++#define UVC_FACE_AUTH_PAYLOAD_SIZE	(1 + UVC_FACE_AUTH_ENTRY_SIZE)
++#define UVC_FACE_AUTH_FLAGS_OFFSET	(1 + 1)
++#define UVC_FACE_AUTH_D0		BIT(0)
++#define UVC_FACE_AUTH_D1		BIT(1)
++#define UVC_FACE_AUTH_D2		BIT(2)
++#define UVC_FACE_AUTH_MAX_MODE		2	/* menu index, not a mask bit */
++
++/*
++ * Private control while this is a proof of concept.  Upstream would need a
++ * proper V4L2_CID_* in videodev2.h; the value is deliberately in the user
++ * class so that nothing else can collide with it.
++ */
++#define V4L2_CID_UVC_FACE_AUTHENTICATION	(V4L2_CID_USER_BASE + 0x1000)
++
++static const u32 uvc_ctrl_face_auth_values[] = {
++	UVC_FACE_AUTH_D0,
++	UVC_FACE_AUTH_D1,
++	UVC_FACE_AUTH_D2,
++};
++
++static const char uvc_ctrl_face_auth_names[][UVC_MENU_NAME_LEN] = {
++	"General purpose",
++	"Alternating illumination",
++	"Continuous illumination",
++};
++
++static int uvc_get_face_auth(struct uvc_control_mapping *mapping, u8 query,
++			     const void *uvc_in, size_t v4l2_size, void *v4l2_out)
++{
++	const u8 *data = uvc_in;
++	u32 *value = v4l2_out;
++	unsigned int i;
++
++	if (WARN_ON(v4l2_size != sizeof(*value)))
++		return -EINVAL;
++	if (data[0] != 1)
++		return -EIO;
++
++	for (i = 0; i < ARRAY_SIZE(uvc_ctrl_face_auth_values); i++) {
++		if (data[UVC_FACE_AUTH_FLAGS_OFFSET] ==
++		    uvc_ctrl_face_auth_values[i]) {
++			*value = i;
++			return 0;
++		}
++	}
++
++	return -EIO;
++}
++
++static int uvc_set_face_auth(struct uvc_control_mapping *mapping,
++			     size_t v4l2_size, const void *v4l2_in,
++			     void *uvc_out)
++{
++	const u32 *value = v4l2_in;
++	u8 *data = uvc_out;
++
++	if (WARN_ON(v4l2_size != sizeof(*value)))
++		return -EINVAL;
++	if (data[0] != 1)
++		return -EIO;
++	if (*value >= ARRAY_SIZE(uvc_ctrl_face_auth_values))
++		return -ERANGE;
++
++	data[UVC_FACE_AUTH_FLAGS_OFFSET] = uvc_ctrl_face_auth_values[*value];
++
++	return 0;
++}
++
++static const struct uvc_control_mapping uvc_ctrl_face_auth_mapping = {
++	.id		= V4L2_CID_UVC_FACE_AUTHENTICATION,
++	.entity		= UVC_GUID_MSXU_1_5,
++	.selector	= UVC_MSXU_CONTROL_FACE_AUTHENTICATION,
++	.size		= 8,
++	.offset		= UVC_FACE_AUTH_FLAGS_OFFSET * 8,
++	.v4l2_type	= V4L2_CTRL_TYPE_MENU,
++	.data_type	= UVC_CTRL_DATA_TYPE_ENUM,
++	.menu_mapping	= uvc_ctrl_face_auth_values,
++	.menu_names	= uvc_ctrl_face_auth_names,
++	.menu_mask	= GENMASK(UVC_FACE_AUTH_MAX_MODE, 0),
++	.get		= uvc_get_face_auth,
++	.set		= uvc_set_face_auth,
++	.name		= "Face Authentication Mode",
++};
++
+ static const struct uvc_control_info uvc_ctrls[] = {
+ 	{
++		.entity		= UVC_GUID_MSXU_1_5,
++		.selector	= UVC_MSXU_CONTROL_FACE_AUTHENTICATION,
++		.index		= 5,
++		.size		= UVC_FACE_AUTH_PAYLOAD_SIZE,
++		.flags		= UVC_CTRL_FLAG_SET_CUR | UVC_CTRL_FLAG_GET_CUR,
++	},
++	{
+ 		.entity		= UVC_GUID_UVC_PROCESSING,
+ 		.selector	= UVC_PU_BRIGHTNESS_CONTROL,
+ 		.index		= 0,
+@@ -1091,6 +1198,21 @@
+ 		.name		= "Region of Interest Auto Ctrls",
+ 	},
+ 	{
++		.id		= V4L2_CID_UVC_FACE_AUTHENTICATION,
++		.entity		= UVC_GUID_MSXU_1_5,
++		.selector	= UVC_MSXU_CONTROL_FACE_AUTHENTICATION,
++		.size		= 8,
++		.offset		= UVC_FACE_AUTH_FLAGS_OFFSET * 8,
++		.v4l2_type	= V4L2_CTRL_TYPE_MENU,
++		.data_type	= UVC_CTRL_DATA_TYPE_ENUM,
++		.menu_mapping	= uvc_ctrl_face_auth_values,
++		.menu_names	= uvc_ctrl_face_auth_names,
++		.menu_mask	= GENMASK(UVC_FACE_AUTH_MAX_MODE, 0),
++		.get		= uvc_get_face_auth,
++		.set		= uvc_set_face_auth,
++		.name		= "Face Authentication Mode",
++	},
++	{
+ 		.id		= V4L2_CID_COLORFX,
+ 		.entity		= UVC_GUID_CHROMEOS_XU,
+ 		.selector	= UVC_CROSXU_CONTROL_IQ_PROFILE,

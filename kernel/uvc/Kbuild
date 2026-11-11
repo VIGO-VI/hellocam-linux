@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0
+# Out-of-tree build of uvcvideo against the running kernel, for local testing.
+obj-m += uvcvideo.o
+uvcvideo-y := uvc_driver.o uvc_queue.o uvc_v4l2.o uvc_video.o uvc_ctrl.o \
+	      uvc_status.o uvc_isight.o uvc_debugfs.o uvc_metadata.o uvc_entity.o
